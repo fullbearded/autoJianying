@@ -4,35 +4,82 @@
 
 ## 草稿复制工具
 
-### 1. 交互式CLI工具 (`interactive_cli.py`) ⭐ 推荐
+### 1. 批量草稿复制与素材替换工具 (`interactive_cli.py`) 🌟 强力推荐
 
-基于 `simple_copy_draft.py` 重新设计的交互式命令行工具，支持草稿复制和视频片段替换的完整工作流程。
+全新设计的批量处理工具，支持part1/part2/part3文件夹组合式素材替换，实现大规模内容自动化生产。
 
-**功能特色:**
-- 🎯 菜单驱动的友好界面
-- 📋 完整的草稿复制流程
-- 🎥 基于materials数据的视频片段替换
-- 📊 详细的草稿信息显示
-- 🔧 智能路径检测和错误处理
+**核心特色:**
+- 🎯 直接展示草稿列表选择复制模版
+- 📁 自动创建part1/part2/part3/background文件夹结构
+- 🔄 组合式素材替换（每个组合使用不同的素材组合）
+- 🎲 支持顺序模式和随机裂变模式
+- 🎮 支持三种替换模式：视频/图片/全部
+- 🎯 智能素材匹配：part1对part1，part2对part2
+- ⚡ 批量复制草稿并自动替换对应素材
 - 💾 支持新版剪映 (draft_info.json)
+- 🏷️ 汉字组合命名：简洁有意义的草稿名称
 
 **使用方法:**
 ```bash
-# 启动交互式工具
+# 启动批量处理工具
 python examples/interactive_cli.py
 ```
 
-**主要功能:**
-1. **选择源草稿** - 浏览和选择要复制的草稿
-2. **复制草稿** - 执行草稿复制操作
-3. **设置素材文件夹** - 配置视频替换素材
-4. **替换视频素材** - 基于materials数据替换视频片段
-5. **查看草稿信息** - 显示详细的草稿元数据
-6. **设置路径** - 配置草稿文件夹路径
+**工作流程:**
+1. **选择复制模版** - 直接从草稿列表选择源草稿
+2. **设置素材文件夹** - 自动检测并确认materials文件夹
+3. **选择替换模式** - 视频/图片/全部三种模式
+4. **创建文件夹结构** - 根据模式创建相应文件夹并扫描素材
+5. **选择组合模式** - 顺序模式或随机裂变模式
+6. **批量处理** - 自动生成N个草稿，每个使用不同素材组合
 
-详细使用指南请参考：[interactive_cli_guide.md](interactive_cli_guide.md)
+**组合示例:**
+```
+视频模式:
+组合 1: A光.mp4 + A在.mp4 + A和.mp4 → 光在和
+组合 2: B经.mp4 + B在.mp4 + B行.mp4 → 经在行
 
-### 2. 完整版演示工具 (`copy_draft_demo.py`)
+图片模式:
+组合 1: 背景A.jpg → 背景
+组合 2: 背景B.jpg → 背景
+
+全部模式:
+组合 1: A光.mp4 + A在.mp4 + A和.mp4 + 背景A.jpg → 光在和背景
+组合 2: B经.mp4 + B在.mp4 + B行.mp4 + 背景B.jpg → 经在行背景
+...
+```
+
+**详细文档:**
+- [BATCH_CLI_GUIDE.md](BATCH_CLI_GUIDE.md) - 完整使用指南
+- [NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md) - 最新功能总结
+
+### 2. 单次草稿复制工具 (`simple_copy_draft.py`) ⭐ 推荐
+
+专门用于指定草稿复制的轻量级工具，无交互式输入，适合单次复制需求。
+
+**使用方法:**
+
+```bash
+# 复制指定草稿
+python examples/simple_copy_draft.py "源草稿名称"
+
+# 复制并指定目标名称
+python examples/simple_copy_draft.py "源草稿名称" --target-name "目标草稿名称"
+
+# 列出所有可用草稿
+python examples/simple_copy_draft.py --list dummy
+
+# 指定草稿文件夹路径
+python examples/simple_copy_draft.py "源草稿名称" --draft-folder "/path/to/jianying/drafts"
+```
+
+**命令行参数:**
+- `source_draft`: 要复制的源草稿名称（必需）
+- `--draft-folder`: 剪映草稿文件夹路径
+- `--target-name`: 目标草稿名称（可选）
+- `--list`: 列出所有可用草稿
+
+### 3. 完整版演示工具 (`copy_draft_demo.py`)
 
 功能齐全的草稿复制演示工具，包含详细的步骤说明和错误处理。
 
@@ -61,31 +108,6 @@ python examples/copy_draft_demo.py --target-name "新草稿名称"
 - `--target-name`: 指定目标草稿名称
 - `--non-interactive`: 非交互模式，使用第一个可用草稿
 
-### 3. 简化版复制工具 (`simple_copy_draft.py`)
-
-专门用于指定草稿复制的轻量级工具，无交互式输入。
-
-**使用方法:**
-
-```bash
-# 复制指定草稿
-python examples/simple_copy_draft.py "源草稿名称"
-
-# 复制并指定目标名称
-python examples/simple_copy_draft.py "源草稿名称" --target-name "目标草稿名称"
-
-# 列出所有可用草稿
-python examples/simple_copy_draft.py --list dummy
-
-# 指定草稿文件夹路径
-python examples/simple_copy_draft.py "源草稿名称" --draft-folder "/path/to/jianying/drafts"
-```
-
-**命令行参数:**
-- `source_draft`: 要复制的源草稿名称（必需）
-- `--draft-folder`: 剪映草稿文件夹路径
-- `--target-name`: 目标草稿名称（可选）
-- `--list`: 列出所有可用草稿
 
 ## 使用示例
 
@@ -130,7 +152,7 @@ python examples/draft_info_reader.py "草稿名称" "/path/to/drafts"
 - 📦 素材统计
 - 🎥 视频素材详情
 
-### 5. 批量替换工具
+### 5. 其他辅助工具
 
 - `batch_replace_materials.py`: 批量替换素材演示
 - `demo_batch_replace.py`: 批量替换demo  
