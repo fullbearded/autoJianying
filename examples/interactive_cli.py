@@ -25,7 +25,8 @@ import pyJianYingDraft as draft
 class BatchDraftProcessor:
     """批量草稿处理器"""
     
-    def __init__(self):
+    def __init__(self, debug=False):
+        self.debug = debug  # 调试模式
         self.draft_folder_path = "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft"
         self.materials_folder_path = None
         self.selected_draft = None
@@ -33,6 +34,7 @@ class BatchDraftProcessor:
         self.material_combinations = []
         self.processing_mode = None  # "sequential" 或 "random"
         self.replacement_mode = None  # "video", "image", "all"
+        self.timeline_mode = None  # "speed_adjust", "crop_end", "crop_start", "crop_random", "keep_original"
         
     def print_header(self, title):
         """打印标题"""
@@ -273,6 +275,50 @@ class BatchDraftProcessor:
             self.replacement_mode = "all"
         
         print(f"✅ 选择模式: {mode_str}")
+        return True
+    
+    def select_timeline_mode(self):
+        """选择时间线处理模式"""
+        if self.replacement_mode == "image":
+            # 图片模式不需要时间线处理
+            self.timeline_mode = "keep_original"
+            return True
+        
+        self.print_section("选择时间线处理模式")
+        
+        print("当新视频素材长度与原素材不同时的处理方式：")
+        
+        mode_options = [
+            "变速调整 - 太长就加速，太短就减速，保持时间线不变 ⭐ 推荐",
+            "裁剪尾部 - 太长就裁剪后面，太短就减速，保持时间线不变",
+            "裁剪头部 - 太长就裁剪前面，太短就减速，保持时间线不变", 
+            "随机裁剪 - 太长就随机裁剪，太短就减速，保持时间线不变",
+            "保持原样 - 不调整，按新素材长度播放，时间线会改变"
+        ]
+        
+        mode_idx, mode_str = self.get_user_choice(mode_options, "选择时间线处理模式")
+        
+        if mode_idx == 0:
+            self.timeline_mode = "speed_adjust"
+        elif mode_idx == 1:
+            self.timeline_mode = "crop_end"
+        elif mode_idx == 2:
+            self.timeline_mode = "crop_start"
+        elif mode_idx == 3:
+            self.timeline_mode = "crop_random"
+        else:
+            self.timeline_mode = "keep_original"
+        
+        print(f"✅ 选择时间线处理: {mode_str}")
+        
+        # 显示处理说明
+        if self.timeline_mode == "speed_adjust":
+            print("📊 示例: 原素材15s，新素材10s → 新素材减速1.5x播放，保持15s时长")
+        elif self.timeline_mode == "crop_end":
+            print("✂️ 示例: 原素材15s，新素材20s → 新素材裁剪为15s（保留前15s）")
+        elif self.timeline_mode == "keep_original":
+            print("🎬 示例: 原素材15s，新素材10s → 新素材播放10s，时间线变化")
+        
         return True
     
     def create_part_folders_and_scan(self):
@@ -525,7 +571,8 @@ class BatchDraftProcessor:
             # 执行复制
             copied_script = self.draft_folder.duplicate_as_template(self.selected_draft, target_name)
         except Exception as e:
-            print(f"    ⚠️ API报错: {e} (这是正常的，新版剪映加密)")
+            # 新版剪映加密，使用原始复制方式
+            pass
         
         # 检查是否实际创建成功
         time.sleep(0.5)  # 等待文件系统同步
@@ -707,6 +754,16 @@ class BatchDraftProcessor:
                 
                 for video in videos:
                     if video.get('material_name') == replacement['original_name']:
+                        # 获取原始片段在时间线上的实际使用时长
+                        original_duration = self.get_actual_segment_duration(draft_info, video.get('id'))
+                        
+                        # 如果获取不到实际片段时长，使用素材时长作为备选
+                        if not original_duration:
+                            original_duration = video.get('duration', 0)
+                            print(f"    💡 使用素材总时长作为原始时长: {original_duration/1000000:.1f}s")
+                        else:
+                            print(f"    🎯 获取实际片段时长: {original_duration/1000000:.1f}s")
+                        
                         # 复制新文件到草稿materials目录
                         new_filename = replacement['new_name']
                         target_path = os.path.join(materials_dir, new_filename)
@@ -715,18 +772,45 @@ class BatchDraftProcessor:
                         
                         # 获取新文件的信息
                         new_file_info = self.get_video_file_info(replacement['new_file'])
+                        new_duration = new_file_info.get('duration', 0) if new_file_info else 0
+                        
+                        if self.debug:
+                            print(f"    🔍 DEBUG: 原始时长 {original_duration} 微秒, 新时长 {new_duration} 微秒")
+                            print(f"    🔍 DEBUG: 新文件信息: {new_file_info}")
+                            print(f"    🔍 DEBUG: 文件路径: {replacement['new_file']}")
+                        
+                        # 计算速度调整比例 (让新素材适应原始时长)
+                        speed_ratio = 1.0
+                        if original_duration > 0 and new_duration > 0:
+                            # 计算时长差异
+                            duration_diff = abs(new_duration - original_duration) / 1000000  # 转换为秒
+                            
+                            # 如果差异在1秒内，允许最后一帧填充，不调整速度
+                            if duration_diff <= 1.0:
+                                speed_ratio = 1.0
+                                print(f"    📊 时长调整: 原始{original_duration/1000000:.1f}s → 新素材{new_duration/1000000:.1f}s → 差异{duration_diff:.1f}s≤1s，保持原速")
+                            else:
+                                # 速度 = 新素材时长 / 原始时长 (让新素材播放时间适应原始时长)
+                                speed_ratio = new_duration / original_duration
+                                action = "加速" if speed_ratio > 1.0 else "减速" if speed_ratio < 1.0 else "保持"
+                                print(f"    📊 时长调整: 原始{original_duration/1000000:.1f}s → 新素材{new_duration/1000000:.1f}s → {action}{speed_ratio:.2f}x")
                         
                         # 更新素材信息
                         video['material_name'] = new_filename
                         video['path'] = f"##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##/materials/video/{new_filename}"
                         
+                        # 更新素材时长为新素材的实际时长
+                        video['duration'] = new_duration
+                        
                         if new_file_info:
-                            if 'duration' in new_file_info:
-                                video['duration'] = new_file_info['duration']
                             if 'width' in new_file_info:
                                 video['width'] = new_file_info['width']
                             if 'height' in new_file_info:
                                 video['height'] = new_file_info['height']
+                        
+                        # 查找并更新使用此素材的片段，设置速度
+                        if speed_ratio != 1.0:
+                            self.update_segments_speed(draft_info, video.get('id'), speed_ratio, new_duration)
                         
                         print(f"    ✅ 更新视频素材: {replacement['original_name']} → {new_filename}")
                         return True
@@ -736,6 +820,80 @@ class BatchDraftProcessor:
         except Exception as e:
             print(f"    ❌ 替换视频素材失败 {replacement['original_name']}: {e}")
             return False
+    
+    def update_segments_speed(self, draft_info, material_id, speed_ratio, new_material_duration=None):
+        """更新使用指定素材的片段速度"""
+        try:
+            if 'tracks' not in draft_info:
+                return
+            
+            updated_segments = 0
+            
+            # 创建Speed对象并添加到speeds数组
+            import uuid
+            speed_id = uuid.uuid4().hex
+            speed_obj = {
+                "curve_speed": None,
+                "id": speed_id,
+                "mode": 0,
+                "speed": speed_ratio,
+                "type": "speed"
+            }
+            
+            # 确保speeds数组存在
+            if 'speeds' not in draft_info:
+                draft_info['speeds'] = []
+            
+            # 添加speed对象到speeds数组
+            draft_info['speeds'].append(speed_obj)
+            
+            for track in draft_info['tracks']:
+                if track.get('type') == 'video' and 'segments' in track:
+                    segments = track['segments']
+                    
+                    for segment in segments:
+                        # 检查片段是否使用了指定的素材
+                        if segment.get('material_id') == material_id:
+                            if self.debug:
+                                print(f"    🔍 DEBUG segment结构: {list(segment.keys())}")
+                                if 'target_timerange' in segment:
+                                    print(f"    🔍 DEBUG target_timerange: {segment['target_timerange']}")
+                                if 'source_timerange' in segment:
+                                    print(f"    🔍 DEBUG source_timerange: {segment['source_timerange']}")
+                            
+                            # 更新source_timerange以适应新素材时长
+                            if new_material_duration and 'source_timerange' in segment:
+                                # 保持source_timerange的start不变，只更新duration
+                                source_start = segment['source_timerange'].get('start', 0)
+                                segment['source_timerange']['duration'] = new_material_duration
+                                
+                                if self.debug:
+                                    print(f"    🔍 DEBUG 更新source_timerange: start={source_start}, duration={new_material_duration}")
+                            
+                            # 更新片段速度引用
+                            segment['speed'] = speed_ratio
+                            
+                            # 更新extra_material_refs，添加speed_id引用
+                            if 'extra_material_refs' not in segment:
+                                segment['extra_material_refs'] = []
+                            
+                            # 移除旧的speed引用（如果存在）
+                            segment['extra_material_refs'] = [ref for ref in segment['extra_material_refs'] 
+                                                            if not any(speed.get('id') == ref for speed in draft_info.get('speeds', []))]
+                            
+                            # 添加新的speed引用
+                            segment['extra_material_refs'].append(speed_id)
+                            
+                            updated_segments += 1
+                            print(f"    🎬 更新片段速度: {speed_ratio:.2f}x (ID: {speed_id})")
+            
+            if updated_segments == 0:
+                print(f"    ⚠️ 未找到使用素材 {material_id} 的片段")
+                # 如果没有使用到，移除刚创建的speed对象
+                draft_info['speeds'] = [s for s in draft_info['speeds'] if s['id'] != speed_id]
+            
+        except Exception as e:
+            print(f"    ❌ 更新片段速度失败: {e}")
     
     def replace_image_material(self, draft_info, replacement, draft_name):
         """替换图片素材"""
@@ -799,12 +957,62 @@ class BatchDraftProcessor:
             except:
                 return None
     
+    def get_actual_segment_duration(self, draft_info, material_id):
+        """获取素材在时间线上的实际使用时长"""
+        total_duration = 0
+        
+        try:
+            if 'tracks' in draft_info:
+                for track in draft_info['tracks']:
+                    if track.get('type') == 'video' and 'segments' in track:
+                        segments = track['segments']
+                        
+                        for segment in segments:
+                            if segment.get('material_id') == material_id:
+                                # 计算片段实际时长：target_timerange.duration
+                                target_timerange = segment.get('target_timerange', {})
+                                if 'duration' in target_timerange:
+                                    total_duration += target_timerange['duration']
+                                elif 'start' in target_timerange and 'end' in target_timerange:
+                                    # 如果没有duration，用end-start计算
+                                    total_duration += target_timerange['end'] - target_timerange['start']
+            
+            return total_duration if total_duration > 0 else None
+            
+        except Exception as e:
+            print(f"    ⚠️ 获取片段实际时长失败: {e}")
+            return None
+
     def get_video_file_info(self, video_path):
-        """获取视频文件信息"""
+        """获取视频文件信息，使用pyJianYingDraft的VideoMaterial获取准确信息"""
+        try:
+            # 导入pyJianYingDraft
+            import sys
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from pyJianYingDraft import VideoMaterial
+            
+            # 创建VideoMaterial实例获取准确信息
+            video_material = VideoMaterial(video_path)
+            
+            video_info = {
+                'duration': video_material.duration,  # VideoMaterial.duration已经是微秒
+                'width': video_material.width,
+                'height': video_material.height,
+                'material_type': video_material.material_type
+            }
+            
+            if self.debug:
+                print(f"    🔍 DEBUG VideoMaterial: duration={video_material.duration} 微秒 = {video_material.duration/1000000:.3f}秒")
+            
+            return video_info
+                
+        except Exception as e:
+            print(f"    ⚠️ 使用VideoMaterial获取文件信息失败: {e}")
+            
+        # 无论VideoMaterial是否成功，都用ffprobe验证时长
         try:
             import subprocess
             
-            # 使用ffprobe获取视频信息
             cmd = [
                 'ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams',
                 video_path
@@ -831,13 +1039,15 @@ class BatchDraftProcessor:
                             video_info['height'] = stream['height']
                         break
                 
+                if self.debug:
+                    print(f"    🔍 DEBUG ffprobe: duration={duration_sec}秒 = {video_info['duration']}微秒")
+                
                 return video_info
             else:
-                return None
+                return {'duration': 5000000}  # 默认5秒
                 
-        except Exception as e:
-            # 返回基础信息
-            file_size = os.path.getsize(video_path)
+        except Exception as e2:
+            print(f"    ⚠️ ffprobe方法也失败: {e2}")
             return {'duration': 5000000}  # 默认5秒
     
     def run(self):
@@ -864,11 +1074,15 @@ class BatchDraftProcessor:
             if not self.select_replacement_mode():
                 return
             
-            # 5. 创建文件夹并扫描素材
+            # 5. 选择时间线处理模式
+            if not self.select_timeline_mode():
+                return
+            
+            # 6. 创建文件夹并扫描素材
             if not self.create_part_folders_and_scan():
                 return
             
-            # 6. 批量处理草稿
+            # 7. 批量处理草稿
             if not self.batch_process_drafts():
                 return
             
@@ -885,7 +1099,13 @@ class BatchDraftProcessor:
 
 def main():
     """主函数"""
-    processor = BatchDraftProcessor()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='批量草稿复制与素材替换工具')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式')
+    args = parser.parse_args()
+    
+    processor = BatchDraftProcessor(debug=args.debug)
     processor.run()
 
 
