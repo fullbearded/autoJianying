@@ -1,0 +1,129 @@
+{
+  "paths": {
+    "draft_folder": "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft",
+    "materials_folder": "/Users/dada/Desktop/0_SCYS/0_coding/github/pyJianYingDraft/test/materials",
+    "output_folder": "",
+    "description": "草稿和素材文件夹路径配置"
+  },
+  "template": {
+    "name": "阳章老师模版",
+    "materials": {
+      "background": "background.jpg",
+      "part1": "part1.mp4",
+      "part2": "part2.mp4", 
+      "part3": "part3.mp4",
+      "voice": "voice.mp3",
+      "bgm": "84b956ea9f1b80e536ff74446c26f6c9.mp3"
+    },
+    "description": "模板草稿配置和素材映射"
+  },
+  "replacement_settings": {
+    "speed_mode": {
+      "value": 1,
+      "options": {
+        "1": "默认按照1倍速播放",
+        "2": "默认按照对应的旧素材在时间线上的播放倍速"
+      },
+      "description": "播放速度设置"
+    },
+    "length_handle": {
+      "value": 1,
+      "options": {
+        "1": "新素材如果太长就加速，太短就减速，保证片段时长相同，时间线不改变",
+        "2": "新素材如果太长就裁剪掉后面的部分，太短就减速，保证片段时长相同，时间线不改变",
+        "3": "新素材如果太长就裁剪掉前面的部分，太短就减速，保证片段时长相同，时间线不改变",
+        "4": "新素材如果太长就裁剪掉随机的部分，太短就减速，保证片段时长相同，时间线不改变",
+        "5": "按指定默认速度播放完新素材，不做额外变速和裁剪，片段时长根据新素材而定，会改变时间线"
+      },
+      "description": "新素材长度处理方式"
+    },
+    "selection_mode": {
+      "value": 1,
+      "options": {
+        "1": "顺序模式（不重复，可裂变数量由最少的新素材数量决定，参考草稿里来自相同素材的不同片段会选中相同新素材）",
+        "2": "随机裂变模式（打乱排序）"
+      },
+      "description": "素材选取模式"
+    },
+    "shuffle_order": {
+      "value": false,
+      "options": {
+        "false": "不需要，就按字母顺序即可",
+        "true": "需要，以一种随机的顺序执行顺序模式"
+      },
+      "description": "是否打乱原素材文件顺序"
+    },
+    "delete_original": {
+      "value": false,
+      "options": {
+        "false": "不需要",
+        "true": "需要"
+      },
+      "description": "批量替换后是否删除原素材文件"
+    },
+    "naming_mode": {
+      "value": 2,
+      "options": {
+        "1": "参考草稿名",
+        "2": "新素材名"
+      },
+      "description": "新草稿标题命名方式"
+    },
+    "media_type": {
+      "value": 2,
+      "options": {
+        "1": "图片（.jpg, .jpeg, .png, .bmp）",
+        "2": "视频（.mp4, .avi, .mov, .mkv）",
+        "3": "图片和视频（混合模式）"
+      },
+      "description": "媒体类型选择"
+    }
+  },
+  "advanced_settings": {
+    "segment_duration": {
+      "value": "10s",
+      "description": "每个片段的默认时长"
+    },
+    "background_duration": {
+      "value": "30s", 
+      "description": "背景图片的默认时长"
+    },
+    "max_part_folders": {
+      "value": 0,
+      "description": "最大part文件夹数量限制，0表示无限制"
+    },
+    "supported_image_formats": {
+      "value": [".jpg", ".jpeg", ".png", ".bmp"],
+      "description": "支持的图片格式"
+    },
+    "supported_video_formats": {
+      "value": [".mp4", ".avi", ".mov", ".mkv"],
+      "description": "支持的视频格式"
+    }
+  },
+  "ui_settings": {
+    "language": {
+      "value": "zh-CN",
+      "options": {
+        "zh-CN": "简体中文",
+        "en-US": "English"
+      },
+      "description": "界面语言"
+    },
+    "show_progress": {
+      "value": true,
+      "description": "是否显示处理进度"
+    },
+    "auto_cleanup": {
+      "value": false,
+      "description": "是否自动清理临时文件"
+    }
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "created_at": "2024-12-20",
+    "last_modified": "2024-12-20",
+    "config_schema_version": "1.0",
+    "description": "pyJianYingDraft 批量素材替换系统配置文件"
+  }
+}

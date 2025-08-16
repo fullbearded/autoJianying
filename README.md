@@ -5,6 +5,26 @@
 
 > 📢 欢迎加入[Discord服务器](https://discord.gg/WfHgGQvhyW)进行用法或新功能的讨论
 
+## 快速开始
+
+### 草稿复制工具
+
+```bash
+# 列出所有可用草稿
+python examples/simple_copy_draft.py --list dummy
+
+# 复制指定草稿
+python examples/simple_copy_draft.py "源草稿名称"
+
+# 复制并指定目标名称
+python examples/simple_copy_draft.py "源草稿名称" --target-name "目标草稿名称"
+
+# 完整演示（包含详细说明）
+python examples/copy_draft_demo.py --non-interactive
+```
+
+更多示例请参考 [`examples/`](examples/) 目录和 [`examples/README.md`](examples/README.md)。
+
 ## 使用思路
 ![使用思路](readme_assets/使用思路.jpg)
 
