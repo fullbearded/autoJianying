@@ -2499,6 +2499,16 @@ class BatchDraftProcessor:
         # 更新剪映根索引文件，确保新草稿能被扫描到
         self.update_root_meta_info(draft_name, draft_path)
         
+        # 修复所有音频轨道渲染配置（包括背景音乐轨道）
+        print(f"    🔧 [DEBUG] 在保存前修复所有音频轨道渲染配置...")
+        audio_track_count = 0
+        for track_name, track in script.tracks.items():
+            if hasattr(track, 'track_type') and track.track_type.name == 'audio':
+                print(f"    🔧 [DEBUG] 发现音频轨道: {track_name}")
+                self.fix_audio_track_rendering(script, track_name)
+                audio_track_count += 1
+        print(f"    ✅ 已修复 {audio_track_count} 个音频轨道的渲染配置")
+        
         # 关键修复：强制使用draft_info.json格式，解决JianYing自动删除草稿的问题
         print(f"    🔧 [DEBUG] 强制使用draft_info.json格式以兼容JianYing...")
         
