@@ -328,13 +328,14 @@ class BatchDraftProcessor:
         
         # 配置音量
         print(f"\n🔊 音量大小配置 (当前: {self.audio_volume}%)")
-        volume_input = self.get_user_input("请输入音量大小 (0-2000, 默认100, 最大2000=20.0dB)", allow_empty=True)
+        volume_input = self.get_user_input("请输入音量大小 (0-1000, 默认100, 最大1000=20.0dB)", allow_empty=True)
         if volume_input:
             try:
                 volume = int(volume_input)
-                if 0 <= volume <= 2000:
+                if 0 <= volume <= 1000:
                     self.audio_volume = volume
-                    print(f"✅ 音量设置为: {volume}%")
+                    db_value = 20 * (volume / 100 - 1) if volume != 100 else 0
+                    print(f"✅ 音量设置为: {volume}% (≈{db_value:.1f}dB)")
                 else:
                     print("⚠️ 音量超出范围，使用默认值100%")
             except ValueError:
@@ -451,13 +452,14 @@ class BatchDraftProcessor:
         
         # 配置背景音乐音量
         print(f"\n🔊 背景音乐音量配置 (当前: {self.bg_music_volume}%)")
-        bg_volume_input = self.get_user_input("请输入背景音乐音量大小 (0-2000, 默认100, 最大2000=20.0dB)", allow_empty=True)
+        bg_volume_input = self.get_user_input("请输入背景音乐音量大小 (0-1000, 默认100, 最大1000=20.0dB)", allow_empty=True)
         if bg_volume_input:
             try:
                 bg_volume = int(bg_volume_input)
-                if 0 <= bg_volume <= 2000:
+                if 0 <= bg_volume <= 1000:
                     self.bg_music_volume = bg_volume
-                    print(f"✅ 背景音乐音量设置为: {bg_volume}%")
+                    db_value = 20 * (bg_volume / 100 - 1) if bg_volume != 100 else 0
+                    print(f"✅ 背景音乐音量设置为: {bg_volume}% (≈{db_value:.1f}dB)")
                 else:
                     print("⚠️ 音量超出范围，使用默认值100%")
             except ValueError:
@@ -2339,10 +2341,11 @@ class BatchDraftProcessor:
                 original_volume = audio_segment.volume
                 if hasattr(self, 'audio_volume') and self.audio_volume != 100:
                     audio_segment.volume = self.audio_volume / 100.0
+                    db_value = 20 * (self.audio_volume / 100 - 1) if self.audio_volume != 100 else 0
                     print(f"    🔧 [DEBUG] 音量调整: {original_volume} -> {audio_segment.volume} ({self.audio_volume}%)")
-                    print(f"    🔊 设置音量: {self.audio_volume}%")
+                    print(f"    🔊 设置音量: {self.audio_volume}% (≈{db_value:.1f}dB)")
                 else:
-                    print(f"    🔧 [DEBUG] 保持默认音量: {audio_segment.volume}")
+                    print(f"    🔧 [DEBUG] 保持默认音量: {audio_segment.volume} (0dB)")
                 
                 # 应用淡入淡出效果
                 fade_applied = False
@@ -2582,10 +2585,11 @@ class BatchDraftProcessor:
                 original_volume = bg_music_segment.volume
                 if hasattr(self, 'bg_music_volume') and self.bg_music_volume != 100:
                     bg_music_segment.volume = self.bg_music_volume / 100.0
+                    db_value = 20 * (self.bg_music_volume / 100 - 1) if self.bg_music_volume != 100 else 0
                     print(f"    🔧 [DEBUG] 背景音乐音量调整: {original_volume} -> {bg_music_segment.volume} ({self.bg_music_volume}%)")
-                    print(f"    🔊 设置背景音乐音量: {self.bg_music_volume}%")
+                    print(f"    🔊 设置背景音乐音量: {self.bg_music_volume}% (≈{db_value:.1f}dB)")
                 else:
-                    print(f"    🔧 [DEBUG] 保持默认背景音乐音量: {bg_music_segment.volume}")
+                    print(f"    🔧 [DEBUG] 保持默认背景音乐音量: {bg_music_segment.volume} (0dB)")
                 
                 # 应用背景音乐淡入淡出效果
                 fade_applied = False
