@@ -508,6 +508,7 @@ class BatchDraftProcessor:
         else:
             self.bg_music_longer_handling = "trim"
         print(f"✅ 背景音乐较长处理: {bg_longer_str}")
+        print(f"    🔧 [DEBUG] 设置bg_music_longer_handling = '{self.bg_music_longer_handling}'")
         
         # 配置背景音乐比视频短的处理方式
         print(f"\n⏱️ 背景音乐比视频短的处理方式")
@@ -2186,6 +2187,295 @@ class BatchDraftProcessor:
         
         return script
     
+    def replace_path_placeholders_in_script(self, script, draft_path):
+        """替换script中所有的路径占位符为实际路径"""
+        try:
+            # 定义占位符
+            placeholder = "##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##"
+            
+            # 递归替换JSON对象中的所有路径占位符
+            def replace_placeholders_recursive(obj):
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        if isinstance(value, str) and placeholder in value:
+                            obj[key] = value.replace(placeholder, draft_path)
+                            if self.debug:
+                                print(f"🔧 替换占位符: {key} = {obj[key]}")
+                        elif isinstance(value, (dict, list)):
+                            replace_placeholders_recursive(value)
+                elif isinstance(obj, list):
+                    for i, item in enumerate(obj):
+                        if isinstance(item, str) and placeholder in item:
+                            obj[i] = item.replace(placeholder, draft_path)
+                            if self.debug:
+                                print(f"🔧 替换占位符: [list] = {obj[i]}")
+                        elif isinstance(item, (dict, list)):
+                            replace_placeholders_recursive(item)
+            
+            # 替换script.content中的所有占位符
+            replace_placeholders_recursive(script.content)
+            
+            print(f"✅ 已替换所有路径占位符: {placeholder} → {draft_path}")
+                
+        except Exception as e:
+            print(f"❌ 替换路径占位符时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+    
+    def update_draft_meta_info(self, draft_path):
+        """更新草稿元信息文件的时间戳，确保剪映能检测到变更"""
+        try:
+            import time
+            
+            meta_info_path = os.path.join(draft_path, "draft_meta_info.json")
+            if not os.path.exists(meta_info_path):
+                print(f"⚠️ draft_meta_info.json 不存在: {meta_info_path}")
+                return
+            
+            # 读取现有的元信息
+            with open(meta_info_path, 'r', encoding='utf-8') as f:
+                meta_info = json.load(f)
+            
+            # 更新时间戳（使用微秒时间戳，与剪映格式一致）
+            current_time = int(time.time() * 1000000)  # 微秒时间戳
+            
+            meta_info['tm_draft_modified'] = current_time
+            
+            # 如果存在 tm_draft_cloud_modified，也更新它
+            if 'tm_draft_cloud_modified' in meta_info:
+                meta_info['tm_draft_cloud_modified'] = current_time
+            
+            # 写回文件
+            with open(meta_info_path, 'w', encoding='utf-8') as f:
+                json.dump(meta_info, f, ensure_ascii=False, indent=None, separators=(',', ':'))
+            
+            print(f"✅ 已更新草稿元信息时间戳: {current_time}")
+                
+        except Exception as e:
+            print(f"❌ 更新草稿元信息时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+    
+    def update_root_meta_info(self, draft_name, draft_path):
+        """更新剪映根索引文件，确保新草稿能被立即扫描到"""
+        try:
+            import time
+            
+            root_meta_path = os.path.join(self.draft_folder_path, "root_meta_info.json")
+            if not os.path.exists(root_meta_path):
+                print(f"⚠️ root_meta_info.json 不存在: {root_meta_path}")
+                return
+            
+            # 读取现有的根元信息
+            with open(root_meta_path, 'r', encoding='utf-8') as f:
+                root_meta = json.load(f)
+            
+            # 检查是否已存在此草稿
+            existing_draft = None
+            for draft in root_meta.get("all_draft_store", []):
+                if draft.get("draft_name") == draft_name:
+                    existing_draft = draft
+                    break
+            
+            # 读取草稿元信息
+            draft_meta_path = os.path.join(draft_path, "draft_meta_info.json")
+            if os.path.exists(draft_meta_path):
+                with open(draft_meta_path, 'r', encoding='utf-8') as f:
+                    draft_meta = json.load(f)
+            else:
+                print(f"⚠️ 草稿元信息文件不存在: {draft_meta_path}")
+                return
+            
+            # 准备草稿条目信息
+            current_time = int(time.time() * 1000000)  # 微秒时间戳
+            
+            draft_entry = {
+                "draft_cloud_last_action_download": True,
+                "draft_cloud_purchase_info": "{\n}\n",
+                "draft_cloud_template_id": "",
+                "draft_cloud_tutorial_info": "{\n}\n", 
+                "draft_cloud_videocut_purchase_info": "{\"template_type\":\"\",\"unlock_type\":\"\"}",
+                "draft_cover": os.path.join(draft_path, "draft_cover.jpg"),
+                "draft_fold_path": draft_path,
+                "draft_id": draft_meta.get("draft_id", ""),
+                "draft_is_ai_shorts": False,
+                "draft_is_invisible": False,
+                "draft_json_file": os.path.join(draft_path, "draft_info.json"), 
+                "draft_name": draft_name,
+                "draft_new_version": "",
+                "draft_root_path": self.draft_folder_path,
+                "draft_timeline_materials_size": draft_meta.get("draft_timeline_materials_size_", 0),
+                "draft_type": "",
+                "tm_draft_cloud_completed": "1755277121012",
+                "tm_draft_cloud_modified": draft_meta.get("tm_draft_cloud_modified", current_time),
+                "tm_draft_create": draft_meta.get("tm_draft_create", current_time),
+                "tm_draft_modified": current_time,
+                "tm_draft_removed": 0,
+                "tm_duration": draft_meta.get("tm_duration", 40000000)
+            }
+            
+            if existing_draft:
+                # 更新现有草稿
+                existing_draft.update(draft_entry)
+                print(f"✅ 更新现有草稿索引: {draft_name}")
+            else:
+                # 添加新草稿到索引
+                if "all_draft_store" not in root_meta:
+                    root_meta["all_draft_store"] = []
+                root_meta["all_draft_store"].append(draft_entry)
+                print(f"✅ 添加新草稿到索引: {draft_name}")
+            
+            # 写回文件
+            with open(root_meta_path, 'w', encoding='utf-8') as f:
+                json.dump(root_meta, f, ensure_ascii=False, separators=(',', ':'))
+            
+            print(f"🎯 剪映根索引已更新，草稿现在应该可以立即被扫描到")
+                
+        except Exception as e:
+            print(f"❌ 更新根索引时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+    
+    def fix_existing_draft_placeholders(self, draft_name):
+        """修复已存在草稿中的路径占位符问题"""
+        try:
+            print(f"🔧 修复草稿 '{draft_name}' 中的路径占位符...")
+            
+            draft_path = os.path.join(self.draft_folder_path, draft_name)
+            if not os.path.exists(draft_path):
+                print(f"❌ 草稿文件夹不存在: {draft_path}")
+                return False
+            
+            # 检查并修复各种草稿文件
+            files_to_fix = [
+                "draft_info.json",
+                "draft_content.json", 
+                "template.tmp",
+                "template-2.tmp"
+            ]
+            
+            placeholder = "##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##"
+            fixed_files = []
+            
+            for filename in files_to_fix:
+                file_path = os.path.join(draft_path, filename)
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        if placeholder in content:
+                            # 替换占位符
+                            new_content = content.replace(placeholder, draft_path)
+                            
+                            # 创建备份
+                            backup_path = file_path + ".backup"
+                            with open(backup_path, 'w', encoding='utf-8') as f:
+                                f.write(content)
+                            
+                            # 写入修复后的内容
+                            with open(file_path, 'w', encoding='utf-8') as f:
+                                f.write(new_content)
+                            
+                            fixed_files.append(filename)
+                            print(f"  ✅ 已修复: {filename}")
+                        else:
+                            print(f"  ℹ️ 无需修复: {filename}")
+                    except Exception as e:
+                        print(f"  ❌ 修复失败: {filename} - {e}")
+            
+            if fixed_files:
+                # 更新元信息时间戳
+                self.update_draft_meta_info(draft_path)
+                print(f"✅ 成功修复 {len(fixed_files)} 个文件: {', '.join(fixed_files)}")
+                print("🎯 现在草稿应该可以正常工作了!")
+                return True
+            else:
+                print("ℹ️ 没有发现需要修复的占位符")
+                return True
+                
+        except Exception as e:
+            print(f"❌ 修复草稿时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def fix_audio_track_rendering(self, script, audio_track_name):
+        """修复音频轨道渲染配置，确保音频能正常播放"""
+        try:
+            if audio_track_name not in script.tracks:
+                print(f"⚠️ 音频轨道不存在: {audio_track_name}")
+                return
+            
+            track = script.tracks[audio_track_name]
+            print(f"🔧 修复音频轨道渲染配置: {audio_track_name}")
+            
+            # 确保轨道本身的属性正确
+            if hasattr(track, 'mute'):
+                track.mute = False
+            
+            # 核心修复：直接操作导出的JSON数据来设置正确的渲染属性
+            # 因为render_index等属性是在export_json时动态生成的
+            def patch_export_json():
+                # 保存原始的export_json方法
+                original_export_json = track.export_json
+                
+                def patched_export_json():
+                    json_data = original_export_json()
+                    
+                    # 计算全局最大render_index
+                    max_render_index = 0
+                    for other_track in script.tracks.values():
+                        if hasattr(other_track, 'render_index'):
+                            max_render_index = max(max_render_index, other_track.render_index)
+                    
+                    # 修复segments中的每个音频段
+                    for i, segment_data in enumerate(json_data.get('segments', [])):
+                        # 设置唯一的render_index
+                        segment_data['render_index'] = max_render_index + i + 1
+                        # 设置正确的track_render_index
+                        segment_data['track_render_index'] = i
+                        # 确保音频段可见
+                        segment_data['visible'] = True
+                        # 确保音量不为0
+                        if segment_data.get('volume', 0) <= 0:
+                            segment_data['volume'] = 1.0
+                        # 确保音频增强关闭
+                        segment_data['intensifies_audio'] = False
+                        
+                        print(f"  ✅ 修复音频段 {i+1}: render_index={segment_data['render_index']}, "
+                              f"track_render_index={segment_data['track_render_index']}, "
+                              f"volume={segment_data['volume']}")
+                    
+                    # 确保音频轨道的flag设置正确
+                    json_data['flag'] = 0
+                    json_data['attribute'] = 0
+                    json_data['is_default_name'] = True
+                    
+                    return json_data
+                
+                # 临时替换export_json方法
+                track.export_json = patched_export_json
+                return original_export_json
+            
+            # 应用补丁
+            original_method = patch_export_json()
+            
+            # 存储原始方法的引用，以便后续恢复（如果需要）
+            track._original_export_json = original_method
+            
+            print(f"✅ 音频轨道渲染配置修复完成: {audio_track_name}")
+            
+        except Exception as e:
+            print(f"❌ 修复音频轨道渲染配置时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+    
     def save_script_file(self, script, draft_name):
         """保存ScriptFile到正确的文件位置"""
         print(f"    🔧 [DEBUG] save_script_file开始执行...")
@@ -2200,25 +2490,29 @@ class BatchDraftProcessor:
         print(f"           draft_content.json: {os.path.exists(draft_content_path)}")
         print(f"           draft_info.json: {os.path.exists(draft_info_path)}")
         
-        if os.path.exists(draft_content_path):
-            # 新版本格式，保存到 draft_content.json
-            print(f"    🔧 [DEBUG] 使用新版本格式保存...")
-            script.save_path = draft_content_path
-            print(f"           设置save_path: {script.save_path}")
-            script.save()
-            print(f"    🔧 [DEBUG] script.save()调用完成")
-            print(f"    💾 保存到 draft_content.json")
-        elif os.path.exists(draft_info_path):
-            # 5.9版本格式，保存到 draft_info.json
-            print(f"    🔧 [DEBUG] 使用5.9版本格式保存...")
-            script.save_path = draft_info_path
-            print(f"           设置save_path: {script.save_path}")
-            script.save()
-            print(f"    🔧 [DEBUG] script.save()调用完成")
-            print(f"    💾 保存到 draft_info.json")
-        else:
-            print(f"    ❌ [DEBUG] 两个文件都不存在!")
-            raise FileNotFoundError(f"无法确定草稿 {draft_name} 的保存位置")
+        # 在保存前替换所有路径占位符
+        self.replace_path_placeholders_in_script(script, draft_path)
+        
+        # 更新草稿元信息文件的时间戳
+        self.update_draft_meta_info(draft_path)
+        
+        # 更新剪映根索引文件，确保新草稿能被扫描到
+        self.update_root_meta_info(draft_name, draft_path)
+        
+        # 关键修复：强制使用draft_info.json格式，解决JianYing自动删除草稿的问题
+        print(f"    🔧 [DEBUG] 强制使用draft_info.json格式以兼容JianYing...")
+        
+        # 如果存在draft_content.json，将其重命名为draft_info.json
+        if os.path.exists(draft_content_path) and not os.path.exists(draft_info_path):
+            print(f"    🔧 [DEBUG] 将draft_content.json重命名为draft_info.json...")
+            os.rename(draft_content_path, draft_info_path)
+        
+        # 始终保存到draft_info.json
+        script.save_path = draft_info_path
+        print(f"           设置save_path: {script.save_path}")
+        script.save()
+        print(f"    🔧 [DEBUG] script.save()调用完成")
+        print(f"    💾 保存到 draft_info.json (强制兼容格式)")
     
     def add_audio_and_subtitle_with_api(self, draft_name, combination):
         """使用pyJianYingDraft库API添加音频和字幕"""
@@ -2309,7 +2603,15 @@ class BatchDraftProcessor:
                 
                 # 将微秒转换为秒
                 target_duration_sec = target_duration / 1000000
-                source_duration_us = min(audio_duration, target_duration)
+                
+                # 正确计算source_timerange：从音频文件中截取的部分
+                if self.audio_longer_handling == "trim" and audio_duration > video_duration:
+                    # 裁剪模式：从音频开头截取video_duration长度
+                    source_duration_us = video_duration
+                else:
+                    # 其他模式：使用计算得到的target_duration
+                    source_duration_us = min(audio_duration, target_duration)
+                
                 source_duration_sec = source_duration_us / 1000000
                 
                 print(f"    🔧 [DEBUG] AudioSegment参数:")
@@ -2321,7 +2623,8 @@ class BatchDraftProcessor:
                 audio_segment = draft.AudioSegment(
                     audio_material,  # 直接传入material对象作为第一个参数
                     draft.trange("0s", f"{target_duration_sec}s"),  # target_timerange作为第二个参数
-                    source_timerange=draft.trange("0s", f"{source_duration_sec}s")  # source_timerange作为关键字参数
+                    source_timerange=draft.trange("0s", f"{source_duration_sec}s") , # source_timerange作为关键字参数
+                    volume=self.audio_volume / 100.0,  # 音量0-1
                 )
                 
                 print(f"    🔧 [DEBUG] AudioSegment创建完成:")
@@ -2402,6 +2705,9 @@ class BatchDraftProcessor:
                     print(f"    ❌ [DEBUG] 轨道验证失败: 轨道不存在")
                 
                 print(f"    ✅ 添加音频片段到轨道: {audio_track_name}")
+                
+                # 修复音频轨道渲染配置，确保音频能正常播放
+                self.fix_audio_track_rendering(script, audio_track_name)
                 
                 # 检查是否需要根据音频设置裁剪视频
                 if self.audio_shorter_handling == "trim_video" and audio_duration < video_duration:
@@ -2546,15 +2852,37 @@ class BatchDraftProcessor:
                 # 根据配置调整背景音乐
                 target_duration, speed_ratio = self.calculate_background_music_adjustments(video_duration, bg_music_duration)
                 
+                # 添加详细的调试信息
+                print(f"    🔧 [DEBUG] 背景音乐调整配置:")
+                print(f"           较长处理方式: {self.bg_music_longer_handling}")
+                print(f"           较短处理方式: {self.bg_music_shorter_handling}")
+                print(f"           背景音乐 > 视频: {bg_music_duration > video_duration}")
+                print(f"    🔧 [DEBUG] calculate_background_music_adjustments返回:")
+                print(f"           target_duration: {target_duration}微秒 ({target_duration/1000000:.2f}秒)")
+                print(f"           speed_ratio: {speed_ratio:.2f}")
+                
                 # 创建背景音乐片段
                 print(f"    🔧 [DEBUG] 开始创建背景音乐AudioSegment...")
-                print(f"           目标时长: {target_duration}微秒 ({target_duration/1000000:.2f}秒)")
-                print(f"           速度比例: {speed_ratio:.2f}")
                 
                 # 将微秒转换为秒
                 target_duration_sec = target_duration / 1000000
-                source_duration_us = min(bg_music_duration, target_duration)
+                
+                # 正确计算source_timerange：从音频文件中截取的部分
+                if self.bg_music_longer_handling == "trim" and bg_music_duration > video_duration:
+                    # 裁剪模式：从音频开头截取video_duration长度
+                    source_duration_us = video_duration
+                else:
+                    # 其他模式：使用计算得到的target_duration
+                    source_duration_us = min(bg_music_duration, target_duration)
+                
                 source_duration_sec = source_duration_us / 1000000
+                
+                print(f"    🔧 [DEBUG] AudioSegment时长计算:")
+                print(f"           target_duration_sec: {target_duration_sec}s (时间线播放时长)")
+                print(f"           source_duration_us: {source_duration_us}微秒 ({source_duration_us/1000000:.2f}秒) (从音频文件截取长度)")
+                print(f"           是否发生裁剪: {source_duration_us < bg_music_duration}")
+                if source_duration_us < bg_music_duration:
+                    print(f"           裁剪长度: {(bg_music_duration - source_duration_us)/1000000:.2f}秒")
                 
                 print(f"    🔧 [DEBUG] 背景音乐AudioSegment参数:")
                 print(f"           material: AudioMaterial对象 (id: {bg_music_material.material_id})")
@@ -2647,6 +2975,9 @@ class BatchDraftProcessor:
                 
                 print(f"    ✅ 添加背景音乐片段到轨道: {bg_music_track_name}")
                 
+                # 修复背景音乐轨道渲染配置，确保音频能正常播放
+                self.fix_audio_track_rendering(script, bg_music_track_name)
+                
                 # 检查是否需要根据背景音乐设置裁剪视频
                 if self.bg_music_shorter_handling == "trim_video" and bg_music_duration < video_duration:
                     print(f"    🔧 [DEBUG] 背景音乐比视频短，需要裁剪视频...")
@@ -2690,15 +3021,19 @@ class BatchDraftProcessor:
             # 根据配置处理背景音乐长度
             if bg_music_duration > video_duration:
                 # 背景音乐比视频长
+                print(f"    🔧 [DEBUG] 背景音乐比视频长，处理方式: {self.bg_music_longer_handling}")
                 if self.bg_music_longer_handling == "speed_up":
                     # 加速背景音乐以适应视频长度
                     speed_ratio = bg_music_duration / video_duration
+                    print(f"    🔧 [DEBUG] 选择加速，速度比例: {speed_ratio:.2f}")
                     return video_duration, speed_ratio
                 elif self.bg_music_longer_handling == "trim":
                     # 裁剪背景音乐以适应视频长度
+                    print(f"    🔧 [DEBUG] 选择裁剪，将背景音乐从{bg_music_duration/1000000:.2f}s裁剪到{video_duration/1000000:.2f}s")
                     return video_duration, 1.0
                 else:  # "none"
                     # 保持背景音乐原样
+                    print(f"    🔧 [DEBUG] 选择无处理，保持背景音乐原样")
                     return bg_music_duration, 1.0
             else:
                 # 背景音乐比视频短或相等
@@ -3070,9 +3405,22 @@ def main():
     
     parser = argparse.ArgumentParser(description='批量草稿复制与素材替换工具')
     parser.add_argument('--debug', action='store_true', help='启用调试模式')
+    parser.add_argument('--fix-draft', type=str, help='修复指定草稿名称的路径占位符问题')
     args = parser.parse_args()
     
     processor = BatchDraftProcessor(debug=args.debug)
+    
+    # 如果指定了修复草稿
+    if args.fix_draft:
+        print(f"🔧 修复模式：修复草稿 '{args.fix_draft}'")
+        success = processor.fix_existing_draft_placeholders(args.fix_draft)
+        if success:
+            print("✅ 修复完成！")
+        else:
+            print("❌ 修复失败！")
+        return
+    
+    # 正常运行
     processor.run()
 
 
