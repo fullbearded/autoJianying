@@ -8,6 +8,7 @@
 import os
 import sys
 import platform
+import time
 from pathlib import Path
 
 # 添加项目根目录到Python路径
@@ -32,6 +33,11 @@ class BatchExportCLI:
             
         self.draft_folder = None
         self.export_folder = os.path.expanduser("~/Desktop/剪映导出")
+        
+        # 自动化延迟设置 (秒)
+        self.automation_delay = 2.0  # 操作间默认延迟
+        self.long_delay = 5.0       # 长操作延迟
+        self.short_delay = 1.0      # 短操作延迟
         
     def print_header(self, title):
         """打印标题"""
@@ -76,6 +82,35 @@ class BatchExportCLI:
             self.print_error(f"初始化草稿文件夹失败: {e}")
             return False
             
+    def setup_automation_delays(self):
+        """设置自动化延迟"""
+        self.print_header("自动化延迟设置")
+        
+        print(f"⏱️  当前延迟设置:")
+        print(f"   - 默认操作延迟: {self.automation_delay}秒")
+        print(f"   - 长操作延迟: {self.long_delay}秒")
+        print(f"   - 短操作延迟: {self.short_delay}秒")
+        
+        adjust = input("是否需要调整延迟设置? (y/n): ").strip().lower()
+        
+        if adjust == 'y':
+            try:
+                new_delay = input(f"请输入默认操作延迟 (当前: {self.automation_delay}秒): ").strip()
+                if new_delay:
+                    self.automation_delay = float(new_delay)
+                    
+                new_long = input(f"请输入长操作延迟 (当前: {self.long_delay}秒): ").strip()
+                if new_long:
+                    self.long_delay = float(new_long)
+                    
+                new_short = input(f"请输入短操作延迟 (当前: {self.short_delay}秒): ").strip()
+                if new_short:
+                    self.short_delay = float(new_short)
+                    
+                self.print_success("延迟设置已更新")
+            except ValueError:
+                self.print_warning("输入无效，使用默认延迟设置")
+        
     def setup_export_folder(self):
         """设置导出文件夹"""
         self.print_header("设置导出文件夹")
@@ -167,34 +202,9 @@ class BatchExportCLI:
             except ValueError:
                 self.print_error("请输入有效的数字")
         
-        # 帧率选择
-        print("\n选择导出帧率:")
-        print("1. 24 FPS")
-        print("2. 30 FPS")
-        print("3. 60 FPS")
-        
-        while True:
-            try:
-                fps_choice = input("请选择帧率 (1-3, 默认2): ").strip()
-                if not fps_choice:
-                    fps_choice = "2"
-                    
-                fps_choice = int(fps_choice)
-                
-                if fps_choice == 1:
-                    framerate = ExportFramerate.FR_24
-                    break
-                elif fps_choice == 2:
-                    framerate = ExportFramerate.FR_30
-                    break
-                elif fps_choice == 3:
-                    framerate = ExportFramerate.FR_60
-                    break
-                else:
-                    self.print_error("请输入1-3之间的数字")
-                    
-            except ValueError:
-                self.print_error("请输入有效的数字")
+        # 使用默认帧率 30 FPS
+        framerate = ExportFramerate.FR_30
+        print("\n🎬 使用默认帧率: 30 FPS")
                 
         return resolution, framerate
         
@@ -257,10 +267,17 @@ class BatchExportCLI:
                     # 设置导出路径
                     export_path = os.path.join(self.export_folder, f"{draft_name}.mp4")
                     
+                    print(f"⏱️  等待 {self.automation_delay}秒 (自动化延迟)...")
+                    time.sleep(self.automation_delay)
+                    
                     # 导出草稿
+                    print(f"🚀 开始导出草稿...")
                     ctrl.export_draft(draft_name, export_path, 
                                     resolution=resolution, 
                                     framerate=framerate)
+                    
+                    print(f"⏱️  等待 {self.long_delay}秒 (导出后延迟)...")
+                    time.sleep(self.long_delay)
                     
                     self.print_success(f"导出成功: {export_path}")
                     success_count += 1
@@ -268,6 +285,8 @@ class BatchExportCLI:
                     # 如果选择删除草稿
                     if delete_after_export:
                         try:
+                            print(f"⏱️  等待 {self.short_delay}秒后删除草稿...")
+                            time.sleep(self.short_delay)
                             self.draft_folder.delete_draft(draft_name)
                             print(f"🗑️  已删除草稿: {draft_name}")
                         except Exception as e:
@@ -308,6 +327,9 @@ class BatchExportCLI:
         # 设置导出文件夹
         self.setup_export_folder()
         
+        # 设置自动化延迟
+        self.setup_automation_delays()
+        
         # 获取草稿列表
         drafts = self.get_draft_list()
         if not drafts:
@@ -334,8 +356,9 @@ class BatchExportCLI:
             
         print(f"\n导出文件夹: {self.export_folder}")
         print(f"分辨率: {resolution}")
-        print(f"帧率: {framerate}")
+        print(f"帧率: {framerate} (默认)")
         print(f"导出后: {'删除草稿' if delete_after_export else '保留草稿'}")
+        print(f"自动化延迟: {self.automation_delay}秒 / {self.long_delay}秒 / {self.short_delay}秒")
         
         confirm = input("\n确认开始导出? (y/n): ").strip().lower()
         if confirm != 'y':

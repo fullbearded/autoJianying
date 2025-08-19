@@ -125,33 +125,56 @@ class JianyingController:
             if not resolution_btn.Exists(0.5):
                 raise AutomationError("未找到导出分辨率下拉框")
             resolution_btn.Click(simulateMove=False)
-            time.sleep(0.5)
+            time.sleep(1.0)
             resolution_item = self.app.TextControl(
                 searchDepth=2, Compare=ControlFinder.desc_matcher(resolution.value)
             )
-            if not resolution_item.Exists(0.5):
+            if not resolution_item.Exists(1.0):
                 raise AutomationError(f"未找到{resolution.value}分辨率选项")
             resolution_item.Click(simulateMove=False)
-            time.sleep(0.5)
+            time.sleep(1.0)
 
         # 设置帧率
         if framerate is not None:
+            print(f"正在设置帧率为: {framerate.value}")
             setting_group = self.app.GroupControl(searchDepth=1,
                                                   Compare=ControlFinder.class_name_matcher("PanelSettingsGroup_QMLTYPE"))
             if not setting_group.Exists(0):
                 raise AutomationError("未找到导出设置组")
+            
             framerate_btn = setting_group.TextControl(searchDepth=2, Compare=ControlFinder.desc_matcher("FrameRateInput"))
             if not framerate_btn.Exists(0.5):
                 raise AutomationError("未找到导出帧率下拉框")
+            
+            print("点击帧率下拉框...")
             framerate_btn.Click(simulateMove=False)
-            time.sleep(0.5)
-            framerate_item = self.app.TextControl(
-                searchDepth=2, Compare=ControlFinder.desc_matcher(framerate.value)
-            )
-            if not framerate_item.Exists(0.5):
-                raise AutomationError(f"未找到{framerate.value}帧率选项")
+            # 增加等待时间，确保下拉菜单完全展开
+            time.sleep(2.0)
+            
+            # 重试机制：尝试多次查找帧率选项
+            framerate_item = None
+            for attempt in range(3):
+                print(f"第{attempt + 1}次尝试查找帧率选项: {framerate.value}")
+                # 尝试在整个应用窗口中查找
+                framerate_item = self.app.TextControl(
+                    searchDepth=3, Compare=ControlFinder.desc_matcher(framerate.value)
+                )
+                if framerate_item.Exists(1.0):
+                    break
+                # 如果没找到，再等待一下
+                time.sleep(1.0)
+            
+            if framerate_item is None or not framerate_item.Exists(0):
+                # 尝试点击其他地方关闭下拉菜单
+                print("未找到帧率选项，尝试关闭下拉菜单...")
+                self.app.Click(10, 10)  # 点击窗口左上角
+                time.sleep(1.0)
+                raise AutomationError(f"未找到{framerate.value}帧率选项，请检查剪映版本或界面语言")
+            
+            print(f"找到帧率选项，点击: {framerate.value}")
             framerate_item.Click(simulateMove=False)
-            time.sleep(0.5)
+            time.sleep(1.0)
+            print("帧率设置完成")
 
 
         # 点击导出
