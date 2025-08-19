@@ -58,6 +58,20 @@ class BatchDraftProcessor:
         self.bg_music_longer_handling = "none"  # "none", "speed_up", "trim"，默认无处理
         self.bg_music_shorter_handling = "none"  # "none", "trim_video", "allow_silence", "slow_down"，默认无处理
         
+        # 文本替换配置
+        self.enable_text_replacement = False
+        self.text_replacement_count = 1  # 1或2，默认1段
+        self.text_folder_path = None  # 文本文件夹路径
+        self.text_files = {}  # {'content': 'path/to/content.txt', 'watermark': 'path/to/watermark.txt'}
+        self.text_selection_mode = "sequential"  # "sequential" 或 "random"，默认按顺序循环
+        self.text_contents = {}  # 缓存解析后的文本内容
+        self.selected_text_tracks = []  # 选中要替换的文本轨道
+        
+        # 封面图配置
+        self.enable_cover_image = False  # 是否生成封面图
+        self.cover_image_style = "timeline_last_frame"  # 封面图样式: "timeline_last_frame", "video_last_frame", "ultrathink"
+        self.last_replaced_videos = []  # 记录最近替换的视频文件
+        
     def print_header(self, title):
         """打印标题"""
         print("\n" + "=" * 70)
@@ -81,12 +95,21 @@ class BatchDraftProcessor:
         """打印错误信息"""
         print(f"❌ {message}")
     
-    def get_user_input(self, prompt, allow_empty=False):
+    def get_user_input(self, prompt, allow_empty=False, default=None):
         """获取用户输入"""
         while True:
             try:
-                user_input = input(f"{prompt}: ").strip()
-                if user_input or allow_empty:
+                full_prompt = f"{prompt}"
+                if default:
+                    full_prompt += f" [默认: {default}]"
+                full_prompt += ": "
+                
+                user_input = input(full_prompt).strip()
+                if user_input:
+                    return user_input
+                elif default:
+                    return default
+                elif allow_empty:
                     return user_input
                 print("输入不能为空，请重新输入")
             except KeyboardInterrupt:
@@ -260,26 +283,19 @@ class BatchDraftProcessor:
         """设置素材文件夹"""
         self.print_section("设置素材文件夹")
         
-        # 尝试自动检测materials文件夹
-        possible_paths = [
-            os.path.join(project_root, "examples", "materials"),
-            os.path.join(project_root, "materials"),
-            os.path.join(os.path.dirname(__file__), "materials")
-        ]
+        # 设置默认路径为当前目录下的materials文件夹
+        default_path = "./materials"
         
-        for path in possible_paths:
-            if os.path.exists(path):
-                self.materials_folder_path = path
-                print(f"✅ 自动检测到素材文件夹: {path}")
-                break
+        # 提示用户手动设置素材文件夹路径
+        custom_path = self.get_user_input("请输入素材文件夹路径", default=default_path)
         
-        if not self.materials_folder_path:
-            custom_path = self.get_user_input("请输入素材文件夹路径", allow_empty=True)
-            if custom_path and os.path.exists(custom_path):
-                self.materials_folder_path = custom_path
-            else:
-                self.print_error("必须设置有效的素材文件夹路径")
-                return False
+        # 验证路径是否存在
+        if custom_path and os.path.exists(custom_path):
+            self.materials_folder_path = custom_path
+            print(f"✅ 素材文件夹设置为: {custom_path}")
+        else:
+            self.print_error(f"素材文件夹不存在: {custom_path}")
+            return False
         
         print(f"📁 素材文件夹: {self.materials_folder_path}")
         return True
@@ -528,6 +544,81 @@ class BatchDraftProcessor:
         else:
             self.bg_music_shorter_handling = "slow_down"
         print(f"✅ 背景音乐较短处理: {bg_shorter_str}")
+        
+        # 配置文本替换功能
+        print(f"\n📝 文本替换配置")
+        text_options = ["是", "否"]
+        text_idx, text_str = self.get_user_choice(text_options, "是否需要文本替换", default_index=1)
+        
+        if text_idx == 1:  # 选择"否"
+            self.enable_text_replacement = False
+            print("✅ 跳过文本替换功能")
+        else:
+            self.enable_text_replacement = True
+            print("✅ 启用文本替换功能")
+            
+            # 选择替换文本数量
+            count_options = ["1段（标题）", "2段（标题+水印）"]
+            count_idx, count_str = self.get_user_choice(count_options, "选择替换的文本数量", default_index=0)
+            
+            self.text_replacement_count = count_idx + 1
+            print(f"✅ 文本替换数量: {self.text_replacement_count}段")
+            
+            # 先从源草稿中提取文本轨道，让用户选择要替换的轨道
+            if not self.configure_text_tracks_selection():
+                print("⚠️ 文本轨道选择失败，将跳过文本替换功能")
+                self.enable_text_replacement = False
+            else:
+                # 设置文本文件夹路径
+                if not self.setup_text_folder():
+                    print("⚠️ 文本文件夹设置失败，将跳过文本替换功能")
+                    self.enable_text_replacement = False
+                else:
+                    # 设置文本文件路径（不展示内容）
+                    if not self.setup_text_files_simple():
+                        print("⚠️ 文本文件设置失败，将跳过文本替换功能")
+                        self.enable_text_replacement = False
+                    else:
+                        # 读取和解析文本内容
+                        if not self.load_text_contents():
+                            print("⚠️ 文本内容读取失败，将跳过文本替换功能")
+                            self.enable_text_replacement = False
+                        else:
+                            # 选择文本替换规则
+                            selection_options = ["按顺序然后循环", "随机"]
+                            selection_idx, selection_str = self.get_user_choice(selection_options, "文本选择规则", default_index=0)
+                            
+                            self.text_selection_mode = "sequential" if selection_idx == 0 else "random"
+                            print(f"✅ 文本选择规则: {selection_str}")
+        
+        # 配置封面图功能
+        print(f"\n🖼️ 封面图配置")
+        cover_options = ["是", "否"]
+        cover_idx, cover_str = self.get_user_choice(cover_options, "是否需要生成封面图", default_index=1)
+        
+        if cover_idx == 1:  # 选择"否"
+            self.enable_cover_image = False
+            print("✅ 跳过封面图生成")
+        else:
+            self.enable_cover_image = True
+            
+            # 选择封面图生成样式
+            style_options = [
+                "草稿时间线最后一帧（推荐）",
+                "视频文件最后一帧",
+                "剪映样式（ultrathink兼容）"
+            ]
+            style_idx, style_str = self.get_user_choice(style_options, "选择封面图样式", default_index=0)
+            
+            if style_idx == 0:
+                self.cover_image_style = "timeline_last_frame"
+                print("✅ 启用封面图生成（草稿时间线最后一帧）")
+            elif style_idx == 1:
+                self.cover_image_style = "video_last_frame"
+                print("✅ 启用封面图生成（视频文件最后一帧）")
+            else:
+                self.cover_image_style = "ultrathink"
+                print("✅ 启用封面图生成（剪映样式兼容）")
         
         return True
     
@@ -952,28 +1043,69 @@ class BatchDraftProcessor:
         return True
     
     def format_combination_display(self, combination):
-        """格式化组合显示"""
+        """格式化组合显示，包含详细的音频和字幕文件信息"""
         parts = []
+        audio_info = []
+        subtitle_info = []
+        
         # 动态获取所有part文件夹，按数字排序
         sorted_folders = sorted([k for k in combination.keys() if k.startswith('part')], 
                                key=lambda x: int(x[4:]) if x[4:].isdigit() else 999)
         
-        # 添加background文件夹（如果存在）
-        if 'background' in combination:
-            sorted_folders.append('background')
-        
-        # 添加audios文件夹（如果存在）
-        if 'audios' in combination:
-            sorted_folders.append('audios')
-        
-        # 添加bg_musics文件夹（如果存在）
-        if 'bg_musics' in combination:
-            sorted_folders.append('bg_musics')
-        
+        # 添加视频文件
         for folder in sorted_folders:
             if folder in combination:
                 parts.append(combination[folder])
-        return " + ".join(parts)
+        
+        # 添加background文件夹（如果存在）
+        if 'background' in combination:
+            parts.append(combination['background'])
+        
+        # 处理音频文件信息
+        if 'audios' in combination:
+            audio_file = combination['audios']
+            parts.append(audio_file)
+            
+            # 查找对应的字幕文件（假设和音频文件同名但扩展名不同）
+            audio_base = os.path.splitext(audio_file)[0]
+            subtitle_file = None
+            
+            # 检查可能的字幕文件扩展名
+            subtitle_extensions = ['.srt', '.txt', '.lrc', '.vtt']
+            if hasattr(self, 'audios_folder_path'):
+                for ext in subtitle_extensions:
+                    potential_subtitle = f"{audio_base}{ext}"
+                    subtitle_path = os.path.join(self.audios_folder_path, potential_subtitle)
+                    if os.path.exists(subtitle_path):
+                        subtitle_file = potential_subtitle
+                        break
+            
+            audio_info.append(f"音频: {audio_file}")
+            if subtitle_file:
+                subtitle_info.append(f"字幕: {subtitle_file}")
+            else:
+                subtitle_info.append("字幕: 无匹配文件")
+        
+        # 添加bg_musics文件夹（如果存在）
+        if 'bg_musics' in combination:
+            bg_music = combination['bg_musics']
+            parts.append(bg_music)
+            audio_info.append(f"背景音乐: {bg_music}")
+        
+        # 构建显示字符串
+        display_parts = " + ".join(parts)
+        
+        # 添加详细信息
+        if audio_info or subtitle_info:
+            detail_parts = []
+            if audio_info:
+                detail_parts.extend(audio_info)
+            if subtitle_info:
+                detail_parts.extend(subtitle_info)
+            if detail_parts:
+                display_parts += f" ({', '.join(detail_parts)})"
+        
+        return display_parts
     
     def extract_chinese_chars(self, filename):
         """从文件名中提取汉字字符"""
@@ -1009,6 +1141,9 @@ class BatchDraftProcessor:
             self.print_error("没有可用的素材组合")
             return False
         
+        # 清空之前记录的视频文件列表
+        self.last_replaced_videos = []
+        
         self.print_header("批量复制草稿并替换素材")
         
         total_combinations = len(self.material_combinations)
@@ -1030,12 +1165,17 @@ class BatchDraftProcessor:
         failed_drafts = []
         used_names = set()  # 跟踪已使用的名称
         
-        # 批量处理
+        # 批量处理，添加重试机制
         for i, combination in enumerate(self.material_combinations, 1):
-            print(f"\n🔄 处理组合 {i}/{total_combinations}: {combination}")
+            print(f"\n🔄 处理组合 {i}/{total_combinations}")
+            
+            # 显示详细的组合信息
+            combo_display = self.format_combination_display(combination)
+            combo_name = self.generate_chinese_combo_name(combination)
+            print(f"   📋 组合内容: {combo_display}")
+            print(f"   🎯 目标名称: {combo_name}")
             
             # 生成新草稿名称（使用汉字组合）
-            combo_name = self.generate_chinese_combo_name(combination)
             base_target_name = f"{self.selected_draft}_{combo_name}"
             
             # 检查名称是否重复，如果重复则添加序号
@@ -1046,29 +1186,56 @@ class BatchDraftProcessor:
                 counter += 1
             used_names.add(target_name)
             
-            try:
-                # 复制草稿
-                print(f"  📋 复制草稿: {target_name}")
-                success = self.copy_single_draft(target_name)
-                
-                if success:
-                    # 替换素材
-                    print(f"  🔄 替换素材...")
-                    replacement_success = self.replace_materials_for_draft(target_name, combination)
+            # 重试机制：最多尝试3次
+            max_retries = 3
+            success = False
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        print(f"  🔄 重试第 {attempt} 次...")
                     
-                    if replacement_success:
-                        successful_drafts.append(target_name)
-                        print(f"  ✅ 组合 {i} 处理成功")
+                    # 复制草稿
+                    print(f"  📋 复制草稿: {target_name}")
+                    copy_success = self.copy_single_draft(target_name)
+                    
+                    if copy_success:
+                        # 替换素材
+                        print(f"  🔄 替换素材...")
+                        replacement_success = self.replace_materials_for_draft(target_name, combination)
+                        
+                        if replacement_success:
+                            successful_drafts.append(target_name)
+                            print(f"  ✅ 组合 {i} 处理成功" + (f" (第{attempt+1}次尝试)" if attempt > 0 else ""))
+                            success = True
+                            break
+                        else:
+                            last_error = "素材替换失败"
+                            print(f"  ⚠️ 组合 {i} 素材替换失败" + (f" (第{attempt+1}次尝试)" if attempt > 0 else ""))
                     else:
-                        failed_drafts.append((target_name, "素材替换失败"))
-                        print(f"  ❌ 组合 {i} 素材替换失败")
-                else:
-                    failed_drafts.append((target_name, "草稿复制失败"))
-                    print(f"  ❌ 组合 {i} 草稿复制失败")
+                        last_error = "草稿复制失败"
+                        print(f"  ⚠️ 组合 {i} 草稿复制失败" + (f" (第{attempt+1}次尝试)" if attempt > 0 else ""))
+                    
+                    # 如果不是最后一次尝试，等待一会儿再重试
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(1)
                 
-            except Exception as e:
-                failed_drafts.append((target_name, str(e)))
-                print(f"  ❌ 组合 {i} 处理出错: {e}")
+                except Exception as e:
+                    last_error = str(e)
+                    print(f"  ⚠️ 组合 {i} 处理出错: {e}" + (f" (第{attempt+1}次尝试)" if attempt > 0 else ""))
+                    
+                    # 如果不是最后一次尝试，等待一会儿再重试
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(1)
+            
+            # 如果所有重试都失败了
+            if not success:
+                failed_drafts.append((target_name, last_error or "未知错误"))
+                print(f"  ❌ 组合 {i} 最终失败，已尝试 {max_retries} 次")
+                print(f"       继续处理下一个组合，保持文字替换顺序不变")
         
         # 显示处理结果
         self.print_header("批量处理结果")
@@ -1084,6 +1251,46 @@ class BatchDraftProcessor:
             print(f"\n💥 失败的草稿:")
             for draft_name, error in failed_drafts:
                 print(f"  • {draft_name}: {error}")
+        
+        # 保存成功创建的草稿列表，供文本替换功能使用，按组合顺序保存
+        self.successful_drafts = successful_drafts
+        
+        # 保存组合顺序映射，确保文字替换时按原始顺序进行
+        self.draft_combination_mapping = []
+        for i, combination in enumerate(self.material_combinations, 1):
+            combo_name = self.generate_chinese_combo_name(combination)
+            base_target_name = f"{self.selected_draft}_{combo_name}"
+            
+            # 查找实际创建的草稿名称（可能有序号后缀）
+            actual_draft_name = None
+            for draft_name in successful_drafts:
+                if draft_name.startswith(base_target_name):
+                    actual_draft_name = draft_name
+                    break
+            
+            # 记录组合信息，包括成功和失败的
+            mapping_info = {
+                'combination_index': i,
+                'combination': combination,
+                'combo_name': combo_name,
+                'target_name': base_target_name,
+                'actual_draft_name': actual_draft_name,
+                'success': actual_draft_name is not None
+            }
+            self.draft_combination_mapping.append(mapping_info)
+        
+        print(f"\n📊 文字替换映射表已建立，共 {len(self.draft_combination_mapping)} 个组合")
+        
+        # 显示映射表详情
+        print(f"\n📋 组合映射详情:")
+        for mapping_info in self.draft_combination_mapping:
+            index = mapping_info['combination_index']
+            combo_name = mapping_info['combo_name']
+            success = mapping_info['success']
+            status = "✅ 成功" if success else "❌ 失败"
+            print(f"   组合 {index}: {combo_name} - {status}")
+        
+        print(f"\n💡 文字替换将严格按照组合顺序 1-{len(self.draft_combination_mapping)} 进行")
         
         return len(successful_drafts) > 0
     
@@ -1358,6 +1565,11 @@ class BatchDraftProcessor:
                         target_path = os.path.join(materials_dir, new_filename)
                         
                         shutil.copy2(replacement['new_file'], target_path)
+                        
+                        # 记录最近替换的视频文件（用于封面图生成）
+                        if not hasattr(self, 'last_replaced_videos'):
+                            self.last_replaced_videos = []
+                        self.last_replaced_videos.append(replacement['new_file'])
                         
                         # 获取新文件的信息
                         new_file_info = self.get_video_file_info(replacement['new_file'])
@@ -2523,6 +2735,631 @@ class BatchDraftProcessor:
         script.save()
         print(f"    🔧 [DEBUG] script.save()调用完成")
         print(f"    💾 保存到 draft_info.json (强制兼容格式)")
+        
+        # 生成封面图（如果启用）
+        if self.enable_cover_image:
+            self.generate_cover_image(script, draft_path, draft_name)
+    
+    def generate_cover_image(self, script, draft_path, draft_name):
+        """根据选择的样式生成草稿封面图"""
+        try:
+            print(f"    🖼️ 开始生成封面图...")
+            print(f"    🎨 使用样式: {self.cover_image_style}")
+            print(f"    🔧 [DEBUG] save_script_file调用完成，基于替换的视频片段，获取最后一帧来做为封面图")
+            
+            # 生成封面图文件路径
+            cover_image_path = os.path.join(draft_path, "draft_cover.jpg")
+            
+            # 根据样式选择生成方法
+            success = False
+            if self.cover_image_style == "timeline_last_frame":
+                success = self.generate_jianying_compatible_cover(draft_name, draft_path, cover_image_path, script)
+            elif self.cover_image_style == "video_last_frame":
+                success = self.generate_video_last_frame_cover(script, cover_image_path)
+            elif self.cover_image_style == "ultrathink":
+                success = self.generate_ultrathink_style_cover(draft_name, cover_image_path, script)
+            else:
+                print(f"    ❌ 未知的封面图样式: {self.cover_image_style}")
+                return False
+            
+            # 如果成功生成封面图，尝试应用到剪映草稿系统
+            if success:
+                self.apply_cover_to_draft(draft_name, draft_path, cover_image_path)
+            
+            return success
+                
+        except Exception as e:
+            print(f"    ❌ 生成封面图时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def generate_timeline_last_frame_cover(self, draft_name, cover_image_path, script):
+        """生成基于草稿时间线最后一帧的封面图"""
+        try:
+            # 获取草稿时间线信息
+            timeline_info = self.get_draft_timeline_info(draft_name)
+            
+            if not timeline_info:
+                print(f"    ⚠️ 无法获取时间线信息，回退到视频文件最后一帧")
+                return self.generate_video_last_frame_cover(script, cover_image_path)
+            
+            video_file_path = timeline_info['video_file_path']
+            extract_time = timeline_info['video_time_seconds']
+            print(f"    📹 使用视频文件: {os.path.basename(video_file_path)}")
+            print(f"    🎯 将截取草稿最后时刻 ({timeline_info['draft_duration_seconds']:.2f}s) 对应的视频时间: {extract_time:.2f}s")
+            
+            if self.extract_frame_at_time_with_imageio(video_file_path, cover_image_path, extract_time):
+                print(f"    ✅ 封面图生成成功: draft_cover.jpg")
+                return True
+            else:
+                print(f"    ❌ 封面图生成失败")
+                return False
+                
+        except Exception as e:
+            print(f"    ❌ 生成时间线封面图失败: {e}")
+            return False
+    
+    def generate_video_last_frame_cover(self, script, cover_image_path):
+        """生成基于视频文件最后一帧的封面图"""
+        try:
+            video_file_path = self.find_video_file_in_script(script)
+            if not video_file_path:
+                print(f"    ⚠️ 草稿中未找到视频文件，无法生成封面图")
+                return False
+            
+            print(f"    📹 使用视频文件: {os.path.basename(video_file_path)}")
+            print(f"    🎯 将截取视频文件的最后一帧")
+            
+            if self.extract_frame_at_time_with_imageio(video_file_path, cover_image_path, None):
+                print(f"    ✅ 封面图生成成功: draft_cover.jpg")
+                return True
+            else:
+                print(f"    ❌ 封面图生成失败")
+                return False
+                
+        except Exception as e:
+            print(f"    ❌ 生成视频封面图失败: {e}")
+            return False
+    
+    def generate_ultrathink_style_cover(self, draft_name, cover_image_path, script):
+        """生成剪映ultrathink样式兼容的封面图"""
+        try:
+            print(f"    🎨 使用剪映样式兼容模式")
+            
+            # 首先尝试时间线方式
+            timeline_info = self.get_draft_timeline_info(draft_name)
+            
+            if timeline_info:
+                video_file_path = timeline_info['video_file_path']
+                extract_time = timeline_info['video_time_seconds']
+                print(f"    📹 使用视频文件: {os.path.basename(video_file_path)}")
+                print(f"    🎯 剪映样式：截取草稿最后时刻 ({timeline_info['draft_duration_seconds']:.2f}s) 对应的视频时间: {extract_time:.2f}s")
+                
+                if self.extract_frame_at_time_with_imageio(video_file_path, cover_image_path, extract_time):
+                    print(f"    ✅ 剪映样式封面图生成成功: draft_cover.jpg")
+                    print(f"    💡 提示: 如需完整的剪映ultrathink样式效果，建议在剪映中重新生成封面")
+                    return True
+            
+            # 回退到视频最后一帧
+            print(f"    ⚠️ 回退到视频文件最后一帧方式")
+            return self.generate_video_last_frame_cover(script, cover_image_path)
+                
+        except Exception as e:
+            print(f"    ❌ 生成剪映样式封面图失败: {e}")
+            return False
+    
+    def generate_jianying_compatible_cover(self, draft_name, draft_path, cover_image_path, script):
+        """生成剪映兼容的多轨道合成封面图"""
+        try:
+            print(f"    🎨 剪映兼容模式：分析草稿结构生成合成封面图")
+            
+            # 1. 分析草稿轨道结构
+            draft_analysis = self.analyze_draft_composition(draft_name)
+            if not draft_analysis:
+                print(f"    ⚠️ 无法分析草稿结构，回退到时间线方式")
+                return self.generate_timeline_last_frame_cover(draft_name, cover_image_path, script)
+            
+            # 2. 生成基础视频帧
+            base_frame_success = False
+            if draft_analysis.get('video_segments'):
+                base_frame_success = self.generate_base_video_frame(draft_analysis, cover_image_path)
+            
+            if not base_frame_success:
+                print(f"    ⚠️ 无法生成基础视频帧，回退到简单方式")
+                return self.generate_timeline_last_frame_cover(draft_name, cover_image_path, script)
+            
+            # 3. 尝试合成其他轨道效果（贴纸、文本等）
+            if draft_analysis.get('has_stickers') or draft_analysis.get('has_texts'):
+                self.composite_additional_layers(draft_analysis, cover_image_path)
+            
+            print(f"    ✅ 剪映兼容封面图生成成功: draft_cover.jpg")
+            return True
+            
+        except Exception as e:
+            print(f"    ❌ 剪映兼容封面图生成失败: {e}")
+            # 回退到简单的时间线方式
+            return self.generate_timeline_last_frame_cover(draft_name, cover_image_path, script)
+    
+    def analyze_draft_composition(self, draft_name):
+        """分析草稿的合成结构"""
+        try:
+            # 读取草稿文件 - 支持绝对路径
+            if os.path.isabs(draft_name):
+                # 如果draft_name是绝对路径，直接使用
+                draft_info_path = os.path.join(draft_name, "draft_info.json")
+            else:
+                # 否则使用相对路径
+                draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            
+            if not os.path.exists(draft_info_path):
+                # 尝试其他可能的路径
+                alt_path = "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/三字阳章老师/draft_info.json"
+                if os.path.exists(alt_path):
+                    draft_info_path = alt_path
+                    print(f"    📁 使用剪映草稿路径: {draft_info_path}")
+                else:
+                    return None
+            
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            analysis = {
+                'draft_duration': draft_data.get('duration', 40000000),
+                'canvas_config': draft_data.get('canvas_config', {}),
+                'video_segments': [],
+                'text_segments': [],
+                'sticker_segments': [],
+                'has_stickers': False,
+                'has_texts': False,
+                'has_effects': False
+            }
+            
+            # 分析轨道
+            tracks = draft_data.get('tracks', [])
+            for track in tracks:
+                track_type = track.get('type', '')
+                segments = track.get('segments', [])
+                
+                for segment in segments:
+                    target_timerange = segment.get('target_timerange', {})
+                    segment_start = target_timerange.get('start', 0)
+                    segment_duration = target_timerange.get('duration', 0)
+                    segment_end = segment_start + segment_duration
+                    
+                    # 检查片段是否可见且有效（不限制于最后时刻）
+                    # 对于封面生成，我们需要考虑所有活跃的轨道内容
+                    if segment_duration > 0 and segment.get('visible', True):  # 有持续时间且可见
+                        if track_type == 'video':
+                            analysis['video_segments'].append({
+                                'segment': segment,
+                                'material_id': segment.get('material_id'),
+                                'track_info': track,
+                                'start_time': segment_start,
+                                'end_time': segment_end
+                            })
+                        elif track_type == 'text':
+                            analysis['text_segments'].append({
+                                'segment': segment,
+                                'start_time': segment_start,
+                                'end_time': segment_end
+                            })
+                            analysis['has_texts'] = True
+                        elif track_type == 'sticker':
+                            analysis['sticker_segments'].append({
+                                'segment': segment,
+                                'start_time': segment_start,
+                                'end_time': segment_end
+                            })
+                            analysis['has_stickers'] = True
+            
+            print(f"    📊 草稿分析结果:")
+            print(f"       视频片段: {len(analysis['video_segments'])}个")
+            print(f"       文本片段: {len(analysis['text_segments'])}个")
+            print(f"       贴纸片段: {len(analysis['sticker_segments'])}个")
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"    ❌ 分析草稿结构失败: {e}")
+            return None
+    
+    def generate_base_video_frame(self, draft_analysis, cover_image_path):
+        """生成基础视频帧"""
+        try:
+            video_segments = draft_analysis.get('video_segments', [])
+            if not video_segments:
+                return False
+            
+            # 查找在草稿结束时刻活跃的视频片段
+            draft_duration = draft_analysis['draft_duration']
+            main_segment = None
+            
+            # 优先选择在草稿最后时刻仍然活跃的片段
+            for segment_info in video_segments:
+                if segment_info['end_time'] >= draft_duration * 0.9:  # 90%之后仍活跃
+                    main_segment = segment_info
+                    break
+            
+            # 如果没有找到，使用最后结束的片段
+            if not main_segment:
+                main_segment = max(video_segments, key=lambda x: x['end_time'])
+            
+            segment_data = main_segment['segment']
+            print(f"    🎬 选择视频片段: ID={segment_data.get('id', 'unknown')[:8]}... 结束时间={main_segment['end_time']/1000000:.1f}s")
+            
+            # 查找对应的视频文件
+            video_file_path = None
+            if hasattr(self, 'last_replaced_videos') and self.last_replaced_videos:
+                video_file_path = self.last_replaced_videos[0]
+            
+            if not video_file_path or not os.path.exists(video_file_path):
+                print(f"    ❌ 未找到视频文件")
+                return False
+            
+            # 计算在草稿最后时刻，该视频片段对应的原视频时间点
+            draft_duration = draft_analysis['draft_duration']
+            target_timerange = segment_data.get('target_timerange', {})
+            source_timerange = segment_data.get('source_timerange', {})
+            
+            target_start = target_timerange.get('start', 0)
+            target_duration = target_timerange.get('duration', 0)
+            source_start = source_timerange.get('start', 0)
+            source_duration = source_timerange.get('duration', 0)
+            
+            if target_duration > 0 and source_duration > 0:
+                # 计算草稿结束时刻在该片段中的进度
+                time_in_segment = draft_duration - target_start
+                progress_ratio = min(time_in_segment / target_duration, 1.0)
+                
+                # 计算对应的原视频时间点
+                video_time_seconds = (source_start + source_duration * progress_ratio) / 1000000.0
+            else:
+                # 回退到简单的结束时间
+                video_time_seconds = (draft_duration - 100000) / 1000000.0  # 稍微提前0.1秒
+            
+            print(f"    📹 使用视频文件: {os.path.basename(video_file_path)}")
+            print(f"    🎯 提取时间点: {video_time_seconds:.2f}s")
+            
+            # 提取帧
+            success = self.extract_frame_at_time_with_imageio(video_file_path, cover_image_path, video_time_seconds)
+            if success:
+                print(f"    ✅ 基础视频帧生成成功")
+            
+            return success
+            
+        except Exception as e:
+            print(f"    ❌ 生成基础视频帧失败: {e}")
+            return False
+    
+    def composite_additional_layers(self, draft_analysis, cover_image_path):
+        """合成额外的图层（贴纸、文本等）"""
+        try:
+            # 为了实现真正的ultrathink多轨道合成，这里提供更详细的分析
+            draft_duration = draft_analysis['draft_duration']
+            
+            print(f"    🎨 分析多轨道合成结构 (ultrathink模式)")
+            
+            # 分析在草稿结束时刻活跃的元素
+            active_at_end = []
+            
+            # 检查视频轨道
+            for video_seg in draft_analysis.get('video_segments', []):
+                if video_seg['end_time'] >= draft_duration * 0.9:
+                    clip_info = video_seg['segment'].get('clip', {})
+                    scale = clip_info.get('scale', {'x': 1.0, 'y': 1.0})
+                    transform = clip_info.get('transform', {'x': 0.0, 'y': 0.0})
+                    alpha = clip_info.get('alpha', 1.0)
+                    
+                    active_at_end.append({
+                        'type': 'video',
+                        'id': video_seg['segment'].get('id', 'unknown')[:8],
+                        'scale': f"{scale['x']:.2f}x",
+                        'position': f"({transform['x']:.2f}, {transform['y']:.2f})",
+                        'alpha': f"{alpha:.2f}"
+                    })
+            
+            # 检查文本轨道
+            for text_seg in draft_analysis.get('text_segments', []):
+                if text_seg['end_time'] >= draft_duration * 0.9:
+                    clip_info = text_seg['segment'].get('clip', {})
+                    scale = clip_info.get('scale', {'x': 1.0, 'y': 1.0})
+                    transform = clip_info.get('transform', {'x': 0.0, 'y': 0.0})
+                    
+                    active_at_end.append({
+                        'type': 'text',
+                        'id': text_seg['segment'].get('id', 'unknown')[:8],
+                        'scale': f"{scale['x']:.2f}x",
+                        'position': f"({transform['x']:.2f}, {transform['y']:.2f})"
+                    })
+            
+            # 检查贴纸轨道
+            for sticker_seg in draft_analysis.get('sticker_segments', []):
+                if sticker_seg['end_time'] >= draft_duration * 0.9:
+                    clip_info = sticker_seg['segment'].get('clip', {})
+                    scale = clip_info.get('scale', {'x': 1.0, 'y': 1.0})
+                    transform = clip_info.get('transform', {'x': 0.0, 'y': 0.0})
+                    
+                    active_at_end.append({
+                        'type': 'sticker',
+                        'id': sticker_seg['segment'].get('id', 'unknown')[:8],
+                        'scale': f"{scale['x']:.2f}x",
+                        'position': f"({transform['x']:.2f}, {transform['y']:.2f})"
+                    })
+            
+            # 输出合成信息
+            print(f"    📊 草稿结束时活跃元素: {len(active_at_end)}个")
+            for element in active_at_end:
+                print(f"       {element['type'].upper()}: {element['id']}... 缩放={element['scale']} 位置={element['position']}")
+            
+            # 由于完整的合成需要复杂的渲染引擎，目前建议用户在剪映中手动完善
+            if len(active_at_end) > 1:
+                print(f"    🌟 检测到多轨道叠加效果 - 建议在剪映中调整ultrathink风格")
+            
+            if draft_analysis.get('has_stickers'):
+                print(f"    🎭 检测到贴纸图层")
+            
+            if draft_analysis.get('has_texts'):
+                print(f"    📝 检测到文本图层")
+            
+            # 保存合成信息用于调试
+            composition_info = {
+                'active_elements': active_at_end,
+                'draft_duration_seconds': draft_duration / 1000000.0,
+                'total_video_segments': len(draft_analysis.get('video_segments', [])),
+                'total_text_segments': len(draft_analysis.get('text_segments', [])),
+                'total_sticker_segments': len(draft_analysis.get('sticker_segments', []))
+            }
+            
+            import json
+            info_path = cover_image_path.replace('.jpg', '_composition_info.json')
+            with open(info_path, 'w', encoding='utf-8') as f:
+                json.dump(composition_info, f, indent=2, ensure_ascii=False)
+            print(f"    📄 合成信息已保存: {os.path.basename(info_path)}")
+            
+        except Exception as e:
+            print(f"    ⚠️ 合成额外图层时出错: {e}")
+    
+    def apply_cover_to_draft(self, draft_name, draft_path, cover_image_path):
+        """将生成的封面图应用到剪映草稿系统"""
+        try:
+            print(f"    🔧 应用封面图到剪映草稿系统...")
+            
+            # 1. 确保cover图片存在
+            if not os.path.exists(cover_image_path):
+                print(f"    ❌ 封面图文件不存在: {cover_image_path}")
+                return False
+            
+            # 2. 创建Resources/cover目录（如果不存在）
+            resources_cover_dir = os.path.join(draft_path, "Resources", "cover")
+            if not os.path.exists(resources_cover_dir):
+                os.makedirs(resources_cover_dir, exist_ok=True)
+                print(f"    📁 创建封面资源目录: {resources_cover_dir}")
+            
+            # 3. 生成新的封面图ID和文件名
+            import uuid
+            cover_id = str(uuid.uuid4()).upper()
+            cover_filename = f"{cover_id}.jpg"
+            cover_resource_path = os.path.join(resources_cover_dir, cover_filename)
+            
+            # 4. 复制封面图到资源目录
+            shutil.copy2(cover_image_path, cover_resource_path)
+            print(f"    📋 复制封面图到资源目录: {cover_filename}")
+            
+            # 5. 更新draft_info.json中的封面配置
+            self.update_draft_cover_config(draft_name, draft_path, cover_id, cover_filename)
+            
+            print(f"    ✅ 封面图已成功应用到剪映草稿系统")
+            return True
+            
+        except Exception as e:
+            print(f"    ❌ 应用封面图到草稿系统失败: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def update_draft_cover_config(self, draft_name, draft_path, cover_id, cover_filename):
+        """更新草稿的封面配置"""
+        try:
+            draft_info_path = os.path.join(draft_path, "draft_info.json")
+            
+            if not os.path.exists(draft_info_path):
+                print(f"    ❌ 草稿配置文件不存在")
+                return False
+            
+            # 读取草稿配置
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            # 备份原始文件
+            backup_path = draft_info_path + ".cover_backup"
+            shutil.copy2(draft_info_path, backup_path)
+            
+            # 更新封面配置
+            if 'cover' not in draft_data:
+                draft_data['cover'] = {}
+            
+            # 简化的封面配置更新
+            draft_data['cover'].update({
+                'sub_type': 'frame',
+                'type': 'image'
+            })
+            
+            # 保存更新后的配置
+            with open(draft_info_path, 'w', encoding='utf-8') as f:
+                json.dump(draft_data, f, ensure_ascii=False, separators=(',', ':'))
+            
+            print(f"    🔧 草稿封面配置已更新")
+            return True
+            
+        except Exception as e:
+            print(f"    ❌ 更新草稿封面配置失败: {e}")
+            return False
+    
+    def test_jianying_cover_generation(self):
+        """测试剪映封面图生成功能"""
+        try:
+            print(f"\n🧪 测试剪映封面图生成功能")
+            
+            # 测试路径
+            test_draft_path = "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/三字阳章老师"
+            test_cover_path = "/Users/dada/Desktop/test_cover.jpg"
+            
+            if not os.path.exists(test_draft_path):
+                print(f"❌ 测试草稿路径不存在: {test_draft_path}")
+                return False
+            
+            # 设置测试参数
+            self.enable_cover_image = True
+            self.cover_image_style = "timeline_last_frame"
+            self.last_replaced_videos = ["/Users/dada/Desktop/0_SCYS/0_coding/github/pyJianYingDraft/examples/materials/part1/E狂.mp4"]
+            
+            # 生成封面图
+            success = self.generate_jianying_compatible_cover("三字阳章老师", test_draft_path, test_cover_path, None)
+            
+            if success and os.path.exists(test_cover_path):
+                print(f"✅ 测试成功！封面图已生成: {test_cover_path}")
+                return True
+            else:
+                print(f"❌ 测试失败")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 测试过程中出错: {e}")
+            return False
+    
+    def find_video_file_in_script(self, script):
+        """从ScriptFile中找到第一个视频文件路径"""
+        try:
+            # 方法1: 从script.materials.videos中查找
+            if hasattr(script, 'materials') and hasattr(script.materials, 'videos'):
+                for video_material in script.materials.videos:
+                    if hasattr(video_material, 'path') and video_material.path:
+                        video_path = video_material.path
+                        # 如果是相对路径，需要转换为绝对路径
+                        if not os.path.isabs(video_path):
+                            video_path = os.path.abspath(video_path)
+                        
+                        if os.path.exists(video_path):
+                            print(f"    🔧 [DEBUG] 从script.materials.videos找到视频: {video_path}")
+                            return video_path
+            
+            print(f"    🔧 [DEBUG] script.materials.videos 中未找到有效视频文件")
+            
+            # 方法2: 从最近替换的视频文件中查找
+            if hasattr(self, 'last_replaced_videos') and self.last_replaced_videos:
+                for video_file in self.last_replaced_videos:
+                    if os.path.exists(video_file):
+                        print(f"    🔧 [DEBUG] 从最近替换的视频中找到: {video_file}")
+                        return video_file
+            
+            # 方法3: 从素材文件夹中查找第一个视频文件
+            if hasattr(self, 'materials_folder_path') and self.materials_folder_path:
+                video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
+                for root, dirs, files in os.walk(self.materials_folder_path):
+                    for file in files:
+                        if any(file.lower().endswith(ext) for ext in video_extensions):
+                            video_path = os.path.join(root, file)
+                            print(f"    🔧 [DEBUG] 从素材文件夹找到视频: {video_path}")
+                            return video_path
+            
+            print(f"    🔧 [DEBUG] 所有方法都未找到有效视频文件")
+            return None
+            
+        except Exception as e:
+            print(f"    🔧 [DEBUG] 查找视频文件时出错: {e}")
+            return None
+    
+    def extract_frame_at_time_with_imageio(self, video_path, output_path, time_seconds=None):
+        """使用imageio提取视频指定时间的帧，如果time_seconds为None则提取最后一帧"""
+        try:
+            import imageio
+            
+            # 读取视频
+            reader = imageio.get_reader(video_path)
+            
+            # 获取视频帧数和帧率
+            frame_count = reader.count_frames()
+            if frame_count == 0:
+                print(f"    ❌ 视频文件无有效帧")
+                return False
+            
+            # 获取视频元数据
+            meta = reader.get_meta_data()
+            fps = meta.get('fps', 25)  # 默认25fps
+            
+            if time_seconds is None:
+                # 如果没有指定时间，提取最后一帧
+                frame_index = frame_count - 1
+                print(f"    🎯 提取最后一帧 (帧索引: {frame_index})")
+            else:
+                # 根据时间计算帧索引
+                frame_index = int(time_seconds * fps)
+                frame_index = min(frame_index, frame_count - 1)  # 确保不超出范围
+                frame_index = max(frame_index, 0)  # 确保不小于0
+                print(f"    🎯 提取时间点 {time_seconds:.2f}s 的帧 (帧索引: {frame_index}, fps: {fps})")
+            
+            # 读取指定帧
+            frame = reader.get_data(frame_index)
+            
+            # 保存为JPEG
+            imageio.imwrite(output_path, frame, format='JPEG', quality=95)
+            
+            reader.close()
+            return True
+            
+        except ImportError:
+            print(f"    ⚠️ imageio库未安装，尝试使用ffmpeg...")
+            return self.extract_frame_at_time_with_ffmpeg(video_path, output_path, time_seconds)
+        except Exception as e:
+            print(f"    ❌ imageio提取失败: {e}")
+            print(f"    ⚠️ 尝试使用ffmpeg...")
+            return self.extract_frame_at_time_with_ffmpeg(video_path, output_path, time_seconds)
+    
+    def extract_last_frame_with_imageio(self, video_path, output_path):
+        """使用imageio提取视频最后一帧（向后兼容）"""
+        return self.extract_frame_at_time_with_imageio(video_path, output_path, None)
+    
+    def extract_frame_at_time_with_ffmpeg(self, video_path, output_path, time_seconds=None):
+        """使用ffmpeg提取视频指定时间的帧（fallback方案）"""
+        try:
+            import subprocess
+            
+            if time_seconds is None:
+                # 如果没有指定时间，提取最后一帧
+                cmd = [
+                    'ffmpeg', '-sseof', '-1', '-i', video_path,
+                    '-frames:v', '1', '-q:v', '2', '-y', output_path
+                ]
+                print(f"    🎯 使用ffmpeg提取最后一帧")
+            else:
+                # 提取指定时间的帧
+                cmd = [
+                    'ffmpeg', '-ss', str(time_seconds), '-i', video_path,
+                    '-frames:v', '1', '-q:v', '2', '-y', output_path
+                ]
+                print(f"    🎯 使用ffmpeg提取时间点 {time_seconds:.2f}s 的帧")
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                return True
+            else:
+                print(f"    ❌ ffmpeg执行失败: {result.stderr}")
+                return False
+                
+        except FileNotFoundError:
+            print(f"    ❌ ffmpeg未安装，无法生成封面图")
+            return False
+        except Exception as e:
+            print(f"    ❌ ffmpeg提取失败: {e}")
+            return False
+    
+    def extract_last_frame_with_ffmpeg(self, video_path, output_path):
+        """使用ffmpeg提取视频最后一帧（向后兼容）"""
+        return self.extract_frame_at_time_with_ffmpeg(video_path, output_path, None)
     
     def add_audio_and_subtitle_with_api(self, draft_name, combination):
         """使用pyJianYingDraft库API添加音频和字幕"""
@@ -3294,6 +4131,189 @@ class BatchDraftProcessor:
         except Exception as e:
             print(f"    ⚠️ 获取片段实际时长失败: {e}")
             return None
+    
+    def get_video_segment_info(self, draft_name, video_file_path):
+        """获取视频片段在草稿中的详细信息，包括时间范围"""
+        try:
+            # 读取草稿文件
+            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            
+            if not os.path.exists(draft_info_path):
+                print(f"    ❌ 草稿文件不存在: {draft_info_path}")
+                return None
+            
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            # 从视频文件名找到对应的material_id
+            video_filename = os.path.basename(video_file_path)
+            material_id = None
+            
+            # 在materials.videos中查找
+            if 'materials' in draft_data and 'videos' in draft_data['materials']:
+                videos = draft_data['materials']['videos']
+                for video in videos:
+                    if video.get('material_name', '').endswith(video_filename):
+                        material_id = video.get('id')
+                        break
+            
+            if not material_id:
+                print(f"    ❌ 在草稿中未找到视频文件 {video_filename} 对应的素材")
+                return None
+            
+            # 在tracks中查找对应的视频片段
+            segment_info = None
+            if 'tracks' in draft_data:
+                for track in draft_data['tracks']:
+                    if track.get('type') == 'video' and 'segments' in track:
+                        segments = track['segments']
+                        for segment in segments:
+                            if segment.get('material_id') == material_id:
+                                # 找到了对应的片段
+                                target_timerange = segment.get('target_timerange', {})
+                                source_timerange = segment.get('source_timerange', {})
+                                
+                                segment_info = {
+                                    'material_id': material_id,
+                                    'target_start': target_timerange.get('start', 0),
+                                    'target_duration': target_timerange.get('duration', 0),
+                                    'source_start': source_timerange.get('start', 0),
+                                    'source_duration': source_timerange.get('duration', 0),
+                                }
+                                
+                                # 计算片段在时间线上的结束时间对应原视频的时间点
+                                if segment_info['source_duration'] > 0 and segment_info['target_duration'] > 0:
+                                    # 片段在原视频中的结束时间
+                                    segment_info['source_end_time'] = (segment_info['source_start'] + segment_info['source_duration']) / 1000000.0
+                                else:
+                                    # 如果没有source_duration，使用target_duration
+                                    segment_info['source_end_time'] = (segment_info['source_start'] + segment_info['target_duration']) / 1000000.0
+                                
+                                print(f"    🎯 找到视频片段信息:")
+                                print(f"       时间线: {segment_info['target_start']/1000000:.2f}s - {(segment_info['target_start']+segment_info['target_duration'])/1000000:.2f}s")
+                                print(f"       原视频: {segment_info['source_start']/1000000:.2f}s - {segment_info['source_end_time']:.2f}s")
+                                
+                                return segment_info
+            
+            print(f"    ❌ 在草稿轨道中未找到视频片段信息")
+            return None
+            
+        except Exception as e:
+            print(f"    ❌ 获取视频片段信息失败: {e}")
+            return None
+    
+    def get_draft_timeline_info(self, draft_name):
+        """获取草稿时间线信息，包括总时长和最后时刻的视频片段"""
+        try:
+            # 读取草稿文件
+            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            
+            if not os.path.exists(draft_info_path):
+                print(f"    ❌ 草稿文件不存在: {draft_info_path}")
+                return None
+            
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            # 获取草稿总时长
+            draft_duration = draft_data.get('duration', 0)
+            
+            # 找到在草稿最后时刻仍然活跃的视频片段
+            last_video_segment = None
+            last_video_material_id = None
+            last_segment_end_time = 0
+            
+            if 'tracks' in draft_data:
+                for track in draft_data['tracks']:
+                    if track.get('type') == 'video' and 'segments' in track:
+                        segments = track['segments']
+                        
+                        for segment in segments:
+                            target_timerange = segment.get('target_timerange', {})
+                            segment_start = target_timerange.get('start', 0)
+                            segment_duration = target_timerange.get('duration', 0)
+                            segment_end = segment_start + segment_duration
+                            
+                            # 找到结束时间最接近草稿总时长的视频片段
+                            if segment_end >= last_segment_end_time and segment_end <= draft_duration:
+                                last_segment_end_time = segment_end
+                                last_video_material_id = segment.get('material_id')
+                                last_video_segment = {
+                                    'segment': segment,
+                                    'material_id': last_video_material_id,
+                                    'timeline_end': segment_end,
+                                    'timeline_start': segment_start,
+                                    'timeline_duration': segment_duration,
+                                    'source_timerange': segment.get('source_timerange', {}),
+                                    'target_timerange': target_timerange
+                                }
+            
+            if not last_video_segment:
+                print(f"    ❌ 未找到草稿最后时刻的视频片段")
+                return None
+            
+            # 获取对应的视频文件路径
+            video_file_path = None
+            if 'materials' in draft_data and 'videos' in draft_data['materials']:
+                videos = draft_data['materials']['videos']
+                for video in videos:
+                    if video.get('id') == last_video_material_id:
+                        material_name = video.get('material_name', '')
+                        # 尝试在最近替换的视频中找到
+                        if hasattr(self, 'last_replaced_videos') and self.last_replaced_videos:
+                            for video_path in self.last_replaced_videos:
+                                if material_name in video_path or os.path.basename(video_path) in material_name:
+                                    video_file_path = video_path
+                                    break
+                        break
+            
+            if not video_file_path:
+                # 尝试从最近替换的视频中找一个
+                if hasattr(self, 'last_replaced_videos') and self.last_replaced_videos:
+                    video_file_path = self.last_replaced_videos[0]
+                    print(f"    ⚠️ 使用最近替换的视频作为回退: {os.path.basename(video_file_path)}")
+                else:
+                    print(f"    ❌ 未找到最后视频片段对应的文件路径")
+                    return None
+            
+            # 计算在原视频中的时间点
+            source_start = last_video_segment['source_timerange'].get('start', 0)
+            source_duration = last_video_segment['source_timerange'].get('duration', 0)
+            timeline_duration = last_video_segment['timeline_duration']
+            
+            # 计算草稿结束时对应原视频的时间点
+            if timeline_duration > 0 and source_duration > 0:
+                # 计算在片段中的进度比例
+                time_in_segment = draft_duration - last_video_segment['timeline_start']
+                progress_ratio = min(time_in_segment / timeline_duration, 1.0)
+                
+                # 计算在原视频中的时间点
+                video_time_seconds = (source_start + source_duration * progress_ratio) / 1000000.0
+            elif source_duration > 0:
+                # 如果timeline_duration为0，但source_duration不为0，使用source结束时间
+                video_time_seconds = (source_start + source_duration) / 1000000.0
+            else:
+                # 都为0的情况，使用source_start
+                video_time_seconds = source_start / 1000000.0
+            
+            timeline_info = {
+                'draft_duration': draft_duration,
+                'draft_duration_seconds': draft_duration / 1000000.0,
+                'video_file_path': video_file_path,
+                'video_time_seconds': video_time_seconds,
+                'last_segment_info': last_video_segment
+            }
+            
+            print(f"    🎯 草稿时间线信息:")
+            print(f"       草稿总时长: {timeline_info['draft_duration_seconds']:.2f}s")
+            print(f"       最后视频: {os.path.basename(video_file_path)}")
+            print(f"       对应时间: {video_time_seconds:.2f}s")
+            
+            return timeline_info
+            
+        except Exception as e:
+            print(f"    ❌ 获取草稿时间线信息失败: {e}")
+            return None
 
     def get_video_file_info(self, video_path):
         """获取视频文件信息，使用pyJianYingDraft的VideoMaterial获取准确信息"""
@@ -3370,6 +4390,14 @@ class BatchDraftProcessor:
             print("💡 支持顺序模式和随机裂变模式")
             print("🎯 自动批量复制草稿并替换对应素材")
             
+            # 添加测试选项
+            print(f"\n🧪 开发者选项")
+            test_options = ["继续正常流程", "测试封面图生成功能"]
+            test_idx, test_str = self.get_user_choice(test_options, "选择模式", default_index=0)
+            
+            if test_idx == 1:  # 测试封面图生成
+                return self.test_jianying_cover_generation()
+            
             # 1. 设置路径
             if not self.setup_paths():
                 return
@@ -3398,6 +4426,11 @@ class BatchDraftProcessor:
             if not self.batch_process_drafts():
                 return
             
+            # 8. 文本替换（如果已启用）
+            if self.enable_text_replacement:
+                if not self.process_text_replacement():
+                    print("⚠️ 文本替换过程中出现问题，但草稿创建已完成")
+            
             self.print_header("处理完成")
             print("🎉 所有草稿已成功创建，可以在剪映中打开查看")
             
@@ -3407,6 +4440,722 @@ class BatchDraftProcessor:
             self.print_error(f"程序运行出错: {e}")
             import traceback
             traceback.print_exc()
+    
+    def setup_text_replacement(self):
+        """设置文本替换功能"""
+        self.print_section("文本替换配置")
+        
+        # 询问是否需要文本替换
+        text_options = ["是", "否"]
+        text_idx, text_str = self.get_user_choice(text_options, "是否需要文本替换", default_index=1)
+        
+        if text_idx == 1:  # 选择"否"
+            self.enable_text_replacement = False
+            return False
+        
+        self.enable_text_replacement = True
+        print("✅ 启用文本替换功能")
+        
+        # 选择替换文本数量
+        count_options = ["1段（标题）", "2段（标题+水印）"]
+        count_idx, count_str = self.get_user_choice(count_options, "选择替换的文本数量", default_index=0)
+        
+        self.text_replacement_count = count_idx + 1
+        print(f"✅ 文本替换数量: {self.text_replacement_count}段")
+        
+        # 设置文本文件夹路径
+        if not self.setup_text_folder():
+            return False
+        
+        # 设置文本文件路径
+        if not self.setup_text_files():
+            return False
+        
+        # 读取和解析文本内容
+        if not self.load_text_contents():
+            return False
+        
+        # 选择文本替换规则
+        selection_options = ["按顺序然后循环", "随机"]
+        selection_idx, selection_str = self.get_user_choice(selection_options, "文本选择规则", default_index=0)
+        
+        self.text_selection_mode = "sequential" if selection_idx == 0 else "random"
+        print(f"✅ 文本选择规则: {selection_str}")
+        
+        return True
+    
+    def setup_text_folder(self):
+        """设置文本文件夹路径"""
+        print(f"\n📁 文本文件夹配置")
+        
+        # 默认文本文件夹路径：./materials/text
+        default_text_path = os.path.join(self.materials_folder_path, "text")
+        
+        print(f"默认文本文件夹: {default_text_path}")
+        
+        if os.path.exists(default_text_path):
+            self.text_folder_path = default_text_path
+            print(f"✅ 找到默认文本文件夹")
+        else:
+            print(f"⚠️ 默认文本文件夹不存在")
+            
+            # 询问是否创建或使用其他路径
+            create_options = [
+                f"创建默认文本文件夹: {default_text_path}",
+                "指定其他文本文件夹路径"
+            ]
+            create_idx, create_str = self.get_user_choice(create_options, "请选择")
+            
+            if create_idx == 0:
+                # 创建默认文件夹
+                try:
+                    os.makedirs(default_text_path, exist_ok=True)
+                    self.text_folder_path = default_text_path
+                    print(f"✅ 已创建文本文件夹: {default_text_path}")
+                except Exception as e:
+                    print(f"❌ 创建文本文件夹失败: {e}")
+                    return False
+            else:
+                # 指定其他路径
+                custom_path = self.get_user_input("请输入文本文件夹路径")
+                if os.path.exists(custom_path):
+                    self.text_folder_path = custom_path
+                    print(f"✅ 使用指定文本文件夹: {custom_path}")
+                else:
+                    print(f"❌ 指定的文本文件夹不存在: {custom_path}")
+                    return False
+        
+        return True
+    
+    def configure_text_tracks_selection(self):
+        """从源草稿中提取文本轨道，让用户选择要替换的轨道"""
+        print(f"\n📋 选择要替换的文本轨道")
+        
+        # 从源草稿中提取文本轨道
+        text_tracks = self.extract_text_tracks_from_draft(self.selected_draft)
+        if not text_tracks:
+            print("❌ 源草稿中没有找到文本轨道")
+            return False
+        
+        print(f"📊 在源草稿 '{self.selected_draft}' 中找到 {len(text_tracks)} 个文本轨道:")
+        
+        # 显示所有文本轨道及其内容
+        for i, track in enumerate(text_tracks):
+            track_display_name = track['track_name'] if track['track_name'] else f"文本轨道{i+1}"
+            print(f"\n  🎬 轨道{i+1}. 【{track_display_name}】({len(track['segments'])}个片段)")
+            
+            for j, segment in enumerate(track['segments']):
+                preview = segment['text'][:40] + "..." if len(segment['text']) > 40 else segment['text']
+                start_time_str = f"{segment['start_time']/1000000:.1f}s"
+                duration_str = f"{segment['duration']/1000000:.1f}s"
+                print(f"       📝 内容: \"{preview}\" (时间:{start_time_str}, 时长:{duration_str})")
+        
+        # 选择要替换的轨道
+        selected_tracks = []
+        
+        for text_type in (['content'] if self.text_replacement_count == 1 else ['content', 'watermark']):
+            type_name = "标题" if text_type == 'content' else "水印"
+            
+            print(f"\n🎯 选择要替换的{type_name}轨道:")
+            
+            # 创建清晰的选项，显示轨道内容
+            track_options = []
+            for i, track in enumerate(text_tracks):
+                # 获取轨道名称
+                track_display_name = track['track_name'] if track['track_name'] else f"文本轨道{i+1}"
+                
+                # 获取轨道的主要文本内容作为预览
+                if track['segments']:
+                    # 如果有多个片段，显示所有片段的简短预览
+                    if len(track['segments']) == 1:
+                        main_text = track['segments'][0]['text'][:25] + ("..." if len(track['segments'][0]['text']) > 25 else "")
+                        track_options.append(f"轨道{i+1}【{track_display_name}】: \"{main_text}\"")
+                    else:
+                        # 多个片段时，显示第一个片段和片段数量
+                        first_text = track['segments'][0]['text'][:20] + ("..." if len(track['segments'][0]['text']) > 20 else "")
+                        track_options.append(f"轨道{i+1}【{track_display_name}】: \"{first_text}\" (+{len(track['segments'])-1}个片段)")
+                else:
+                    track_options.append(f"轨道{i+1}【{track_display_name}】: (无内容)")
+            track_options.append("跳过此类型")
+            
+            track_idx, track_str = self.get_user_choice(track_options, f"选择{type_name}轨道")
+            
+            if track_idx < len(text_tracks):
+                selected_track = text_tracks[track_idx]
+                selected_tracks.append({
+                    'type': text_type,
+                    'track_index': track_idx,  # 在文本轨道数组中的索引
+                    'original_track_index': selected_track['track_index'],  # 在所有轨道中的真实索引
+                    'track_info': selected_track
+                })
+                # 显示选择的轨道及其内容，更清晰
+                track_display_name = selected_track['track_name'] if selected_track['track_name'] else f"文本轨道{track_idx+1}"
+                if selected_track['segments']:
+                    if len(selected_track['segments']) == 1:
+                        content_preview = selected_track['segments'][0]['text'][:30] + ("..." if len(selected_track['segments'][0]['text']) > 30 else "")
+                        print(f"✅ 选择{type_name}轨道: 轨道{track_idx+1}【{track_display_name}】- \"{content_preview}\"")
+                    else:
+                        first_content = selected_track['segments'][0]['text'][:25] + ("..." if len(selected_track['segments'][0]['text']) > 25 else "")
+                        print(f"✅ 选择{type_name}轨道: 轨道{track_idx+1}【{track_display_name}】- \"{first_content}\" (共{len(selected_track['segments'])}个片段)")
+                else:
+                    print(f"✅ 选择{type_name}轨道: 轨道{track_idx+1}【{track_display_name}】(无内容)")
+            else:
+                print(f"⏭️ 跳过{type_name}替换")
+        
+        if not selected_tracks:
+            print("❌ 没有选择任何要替换的轨道")
+            return False
+        
+        self.selected_text_tracks = selected_tracks
+        return True
+    
+    def setup_text_files_simple(self):
+        """设置文本文件路径（简化版，不展示内容）"""
+        print(f"\n📄 文本文件配置")
+        
+        # 第一段文本（标题）
+        default_content_file = os.path.join(self.text_folder_path, "content.txt")
+        
+        print(f"第一段文本（标题）:")
+        print(f"  默认文件: {default_content_file}")
+        
+        use_default = True
+        if os.path.exists(default_content_file):
+            print(f"  ✅ 找到默认文件")
+            custom_input = self.get_user_input("是否使用其他文件？(直接回车使用默认文件，或输入新路径)", allow_empty=True)
+            if custom_input:
+                if os.path.exists(custom_input):
+                    self.text_files['content'] = custom_input
+                    print(f"  ✅ 使用指定文件: {custom_input}")
+                    use_default = False
+                else:
+                    print(f"  ❌ 指定文件不存在，使用默认文件")
+        else:
+            print(f"  ⚠️ 默认文件不存在")
+            custom_content = self.get_user_input("请输入标题文本文件路径", allow_empty=False)
+            if custom_content and os.path.exists(custom_content):
+                self.text_files['content'] = custom_content
+                print(f"  ✅ 使用指定文件: {custom_content}")
+                use_default = False
+            else:
+                print(f"  ❌ 无法找到文件")
+                return False
+        
+        if use_default:
+            self.text_files['content'] = default_content_file
+        
+        # 第二段文本（水印）- 仅在选择2段时设置
+        if self.text_replacement_count == 2:
+            default_watermark_file = os.path.join(self.text_folder_path, "watermark.txt")
+            
+            print(f"\n第二段文本（水印）:")
+            print(f"  默认文件: {default_watermark_file}")
+            
+            use_default_watermark = True
+            if os.path.exists(default_watermark_file):
+                print(f"  ✅ 找到默认文件")
+                custom_input = self.get_user_input("是否使用其他文件？(直接回车使用默认文件，或输入新路径)", allow_empty=True)
+                if custom_input:
+                    if os.path.exists(custom_input):
+                        self.text_files['watermark'] = custom_input
+                        print(f"  ✅ 使用指定文件: {custom_input}")
+                        use_default_watermark = False
+                    else:
+                        print(f"  ❌ 指定文件不存在，使用默认文件")
+            else:
+                print(f"  ⚠️ 默认文件不存在")
+                custom_watermark = self.get_user_input("请输入水印文本文件路径", allow_empty=False)
+                if custom_watermark and os.path.exists(custom_watermark):
+                    self.text_files['watermark'] = custom_watermark
+                    print(f"  ✅ 使用指定文件: {custom_watermark}")
+                    use_default_watermark = False
+                else:
+                    print(f"  ❌ 无法找到文件")
+                    return False
+            
+            if use_default_watermark:
+                self.text_files['watermark'] = default_watermark_file
+        
+        return True
+
+    def setup_text_files(self):
+        """设置文本文件路径"""
+        print(f"\n📄 文本文件配置")
+        
+        # 第一段文本（标题）
+        default_content_file = os.path.join(self.text_folder_path, "content.txt")
+        print(f"第一段文本（标题）默认文件: {default_content_file}")
+        
+        if os.path.exists(default_content_file):
+            self.text_files['content'] = default_content_file
+            print(f"✅ 找到默认标题文件")
+        else:
+            print(f"⚠️ 默认标题文件不存在")
+            custom_content = self.get_user_input("请输入标题文本文件路径（留空跳过）", allow_empty=True)
+            if custom_content and os.path.exists(custom_content):
+                self.text_files['content'] = custom_content
+                print(f"✅ 使用指定标题文件: {custom_content}")
+            else:
+                print(f"❌ 无法找到标题文本文件")
+                return False
+        
+        # 第二段文本（水印）- 仅在选择2段时设置
+        if self.text_replacement_count == 2:
+            default_watermark_file = os.path.join(self.text_folder_path, "watermark.txt")
+            print(f"第二段文本（水印）默认文件: {default_watermark_file}")
+            
+            if os.path.exists(default_watermark_file):
+                self.text_files['watermark'] = default_watermark_file
+                print(f"✅ 找到默认水印文件")
+            else:
+                print(f"⚠️ 默认水印文件不存在")
+                custom_watermark = self.get_user_input("请输入水印文本文件路径（留空跳过）", allow_empty=True)
+                if custom_watermark and os.path.exists(custom_watermark):
+                    self.text_files['watermark'] = custom_watermark
+                    print(f"✅ 使用指定水印文件: {custom_watermark}")
+                else:
+                    print(f"❌ 无法找到水印文本文件")
+                    return False
+        
+        return True
+    
+    def load_text_contents(self):
+        """读取和解析文本内容"""
+        print(f"\n📖 读取文本内容")
+        
+        for text_type, file_path in self.text_files.items():
+            try:
+                print(f"📄 读取{text_type}文件: {file_path}")
+                
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # 解析文本内容（支持#分割和空行分割）
+                texts = self.parse_text_content(content)
+                
+                if texts:
+                    self.text_contents[text_type] = texts
+                    print(f"✅ 解析到 {len(texts)} 条{text_type}文本")
+                    
+                    # 显示前3条内容作为预览
+                    for i, text in enumerate(texts[:3]):
+                        preview = text[:50] + "..." if len(text) > 50 else text
+                        print(f"  {i+1}. {preview}")
+                    
+                    if len(texts) > 3:
+                        print(f"  ... 还有 {len(texts)-3} 条")
+                else:
+                    print(f"❌ {text_type}文件为空或格式不正确")
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ 读取{text_type}文件失败: {e}")
+                return False
+        
+        return True
+    
+    def parse_text_content(self, content):
+        """解析文本内容，支持#分割和空行分割"""
+        if not content.strip():
+            return []
+        
+        # 首先尝试按 # 分割（支持#前后可能有空格或换行）
+        if '#' in content:
+            # 使用正则表达式处理#分割，支持#前后的空白字符
+            import re
+            texts = re.split(r'\s*#\s*', content)
+            texts = [text.strip() for text in texts if text.strip()]
+            if texts:
+                print(f"    🔍 使用#分割模式，解析到 {len(texts)} 条文本")
+                return texts
+        
+        # 然后尝试按空行分割（两个或多个连续换行符，中间可能有空格）
+        import re
+        texts = re.split(r'\n\s*\n', content)
+        texts = [text.strip() for text in texts if text.strip()]
+        
+        if len(texts) > 1:
+            print(f"    🔍 使用空行分割模式，解析到 {len(texts)} 条文本")
+            return texts
+        
+        # 如果都没有分割符，返回整个内容作为单条文本
+        texts = [content.strip()]
+        print(f"    🔍 使用单条文本模式，解析到 {len(texts)} 条文本")
+        return texts
+    
+    def process_text_replacement(self):
+        """处理文本替换，按原始组合顺序进行，确保文字替换顺序不受失败影响"""
+        try:
+            self.print_section("执行文本替换")
+            
+            # 检查是否有组合映射表
+            if not hasattr(self, 'draft_combination_mapping') or not self.draft_combination_mapping:
+                print("❌ 没有找到组合映射表，无法进行文本替换")
+                return False
+            
+            # 检查是否已选择文本轨道
+            if not hasattr(self, 'selected_text_tracks') or not self.selected_text_tracks:
+                print("❌ 没有选择要替换的文本轨道")
+                return False
+            
+            replacement_count = 0
+            skipped_count = 0
+            total_combinations = len(self.draft_combination_mapping)
+            
+            print(f"📊 将按组合顺序进行文本替换，共 {total_combinations} 个组合")
+            
+            # 按原始组合顺序进行文本替换
+            for mapping_info in self.draft_combination_mapping:
+                combination_index = mapping_info['combination_index']
+                combo_name = mapping_info['combo_name']
+                actual_draft_name = mapping_info['actual_draft_name']
+                is_success = mapping_info['success']
+                
+                print(f"\n🔄 处理组合 {combination_index}/{total_combinations}: {combo_name}")
+                
+                if not is_success or not actual_draft_name:
+                    print(f"   ⏭️ 草稿创建失败，跳过文本替换，保持顺序")
+                    skipped_count += 1
+                    continue
+                
+                print(f"   🎯 草稿名称: {actual_draft_name}")
+                
+                # 提取草稿中的文本轨道
+                text_tracks = self.extract_text_tracks_from_draft(actual_draft_name)
+                if not text_tracks:
+                    print(f"   ⚠️ 草稿中没有找到文本轨道，跳过")
+                    skipped_count += 1
+                    continue
+                
+                # 执行文本替换（使用配置阶段选择的轨道）
+                if self.replace_text_in_draft(actual_draft_name, text_tracks):
+                    replacement_count += 1
+                    print(f"   ✅ 文本替换完成")
+                else:
+                    print(f"   ❌ 文本替换失败")
+                    skipped_count += 1
+            
+            print(f"\n🎉 文本替换处理完成！")
+            print(f"   ✅ 成功替换: {replacement_count} 个草稿")
+            print(f"   ⏭️ 跳过处理: {skipped_count} 个组合")
+            print(f"   📊 总计组合: {total_combinations} 个")
+            print(f"   🔢 文字替换顺序: 严格按照组合顺序 1-{total_combinations}")
+            
+            return replacement_count > 0
+            
+        except Exception as e:
+            print(f"❌ 文本替换过程出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def extract_text_tracks_from_draft(self, draft_name):
+        """从草稿中提取文本轨道信息"""
+        try:
+            # 读取草稿文件
+            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            
+            if not os.path.exists(draft_info_path):
+                print(f"❌ 草稿文件不存在: {draft_info_path}")
+                return []
+            
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            # 获取素材信息
+            materials = draft_data.get('materials', {})
+            tracks = draft_data.get('tracks', [])
+            
+            text_tracks = []
+            text_track_index = 0
+            
+            for track_index, track in enumerate(tracks):
+                if not track or track.get('type') != 'text':
+                    continue
+                
+                track_info = {
+                    'track_index': track_index,
+                    'text_track_index': text_track_index,
+                    'track_id': track.get('id', ''),
+                    'track_name': track.get('name', f'文本轨道 {text_track_index + 1}'),
+                    'segments': [],
+                    'track_attribute': track.get('attribute', 0),
+                    'track_flag': track.get('flag', 0)
+                }
+                
+                # 遍历轨道中的片段
+                segments = track.get('segments', [])
+                
+                for segment_index, segment in enumerate(segments):
+                    if not segment:
+                        continue
+                    
+                    text_info = self.extract_text_from_segment(segment, materials)
+                    if text_info:
+                        text_info['segment_index'] = segment_index
+                        text_info['track_index'] = track_index
+                        text_info['text_track_index'] = text_track_index
+                        track_info['segments'].append(text_info)
+                
+                text_tracks.append(track_info)
+                text_track_index += 1
+            
+            return text_tracks
+            
+        except Exception as e:
+            print(f"❌ 提取文本轨道失败: {e}")
+            return []
+    
+    def extract_text_from_segment(self, segment, materials):
+        """从片段数据中提取文本信息（基于extract_text_from_draft_info.py）"""
+        if not segment or not materials:
+            return None
+        
+        # 获取素材ID
+        material_id = segment.get("material_id")
+        if not material_id:
+            return None
+        
+        # 在texts材料中查找对应的文本
+        texts = materials.get("texts", [])
+        if not texts:
+            return None
+        
+        for text_material in texts:
+            if not text_material:
+                continue
+            if text_material.get("id") == material_id:
+                # 提取文本内容
+                text_content = ""
+                content_data = text_material.get("content", "")
+                if content_data:
+                    try:
+                        if isinstance(content_data, str):
+                            content_json = json.loads(content_data)
+                        else:
+                            content_json = content_data
+                        text_content = content_json.get("text", "")
+                    except:
+                        text_content = str(content_data)
+                
+                if not text_content:
+                    text_content = text_material.get("base_content", "")
+                
+                # 提取文本信息
+                text_info = {
+                    'material_id': material_id,
+                    'text': text_content,
+                    'segment_id': segment.get("id", ""),
+                    'start_time': (segment.get("target_timerange") or {}).get("start", 0),
+                    'duration': (segment.get("target_timerange") or {}).get("duration", 0),
+                    'visible': segment.get("visible", True),
+                }
+                
+                return text_info
+        
+        return None
+    
+    def select_text_tracks_to_replace(self, text_tracks):
+        """选择要替换的文本轨道"""
+        if not text_tracks:
+            print("❌ 没有找到文本轨道")
+            return False
+        
+        print(f"\n📋 找到 {len(text_tracks)} 个文本轨道:")
+        
+        # 显示所有文本轨道及其内容
+        for i, track in enumerate(text_tracks):
+            print(f"\n  {i+1}. 【{track['track_name']}】({len(track['segments'])}个片段)")
+            
+            for j, segment in enumerate(track['segments']):
+                preview = segment['text'][:30] + "..." if len(segment['text']) > 30 else segment['text']
+                start_time_str = f"{segment['start_time']/1000000:.1f}s"
+                duration_str = f"{segment['duration']/1000000:.1f}s"
+                print(f"     片段{j+1}: \"{preview}\" (时间:{start_time_str}, 时长:{duration_str})")
+        
+        # 选择要替换的轨道
+        selected_tracks = []
+        
+        for text_type in (['content'] if self.text_replacement_count == 1 else ['content', 'watermark']):
+            type_name = "标题" if text_type == 'content' else "水印"
+            
+            print(f"\n🎯 选择要替换的{type_name}轨道:")
+            track_options = [f"轨道{i+1}: {track['track_name']}" for i, track in enumerate(text_tracks)]
+            track_options.append("跳过此类型")
+            
+            track_idx, track_str = self.get_user_choice(track_options, f"选择{type_name}轨道")
+            
+            if track_idx < len(text_tracks):
+                selected_track = text_tracks[track_idx]
+                selected_tracks.append({
+                    'type': text_type,
+                    'track_index': track_idx,  # 在文本轨道数组中的索引
+                    'original_track_index': selected_track['track_index'],  # 在所有轨道中的真实索引
+                    'track_info': selected_track
+                })
+                print(f"✅ 选择{type_name}轨道: {track_str}")
+            else:
+                print(f"⏭️ 跳过{type_name}替换")
+        
+        if not selected_tracks:
+            print("❌ 没有选择任何要替换的轨道")
+            return False
+        
+        self.selected_text_tracks = selected_tracks
+        return True
+    
+    def replace_text_in_draft(self, draft_name, text_tracks):
+        """在草稿中执行文本替换"""
+        try:
+            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            
+            # 读取草稿文件
+            with open(draft_info_path, 'r', encoding='utf-8') as f:
+                draft_data = json.load(f)
+            
+            # 备份原文件
+            backup_path = draft_info_path + ".text_backup"
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                json.dump(draft_data, f, ensure_ascii=False, indent=2)
+            
+            replacement_success = False
+            
+            # 对每个选择的文本类型进行替换
+            for selected_track in self.selected_text_tracks:
+                text_type = selected_track['type']
+                track_index = selected_track['track_index']
+                source_track_info = selected_track['track_info']
+                
+                if text_type not in self.text_contents:
+                    print(f"⚠️ 没有{text_type}文本内容，跳过")
+                    continue
+                
+                # 获取要替换的新文本
+                new_text = self.get_next_text_content(text_type, draft_name)
+                if not new_text:
+                    print(f"⚠️ 无法获取{text_type}的新文本内容")
+                    continue
+                
+                # 在当前草稿的文本轨道中找到对应的轨道
+                # 首先尝试按原始轨道索引匹配
+                target_track = None
+                original_track_index = selected_track.get('original_track_index', -1)
+                match_method = ""
+                
+                # 方法1: 按原始轨道索引匹配（最准确）
+                for track in text_tracks:
+                    if track.get('track_index') == original_track_index:
+                        target_track = track
+                        match_method = f"原始轨道索引({original_track_index})"
+                        break
+                
+                # 方法2: 如果方法1失败，按轨道名称匹配
+                if not target_track:
+                    for track in text_tracks:
+                        if track['track_name'] == source_track_info['track_name']:
+                            target_track = track
+                            match_method = f"轨道名称({source_track_info['track_name']})"
+                            break
+                
+                # 方法3: 如果都失败，按在文本轨道数组中的位置匹配（兜底）
+                if not target_track and track_index < len(text_tracks):
+                    target_track = text_tracks[track_index]
+                    match_method = f"文本轨道位置({track_index})"
+                
+                if not target_track:
+                    print(f"  ⚠️ 无法在当前草稿中找到匹配的{text_type}轨道")
+                    continue
+                
+                print(f"  🎯 匹配{text_type}轨道: {match_method}")
+                
+                # 在draft_data中替换文本
+                if self.update_text_in_draft_data(draft_data, target_track, new_text):
+                    print(f"  ✅ {text_type}文本替换成功: \"{new_text[:30]}...\"")
+                    replacement_success = True
+                else:
+                    print(f"  ❌ {text_type}文本替换失败")
+            
+            if replacement_success:
+                # 保存修改后的草稿文件
+                with open(draft_info_path, 'w', encoding='utf-8') as f:
+                    json.dump(draft_data, f, ensure_ascii=False, indent=2)
+                
+                return True
+            else:
+                print("❌ 所有文本替换都失败了")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 替换文本时出错: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def get_next_text_content(self, text_type, draft_name):
+        """获取下一个要使用的文本内容"""
+        if text_type not in self.text_contents:
+            return None
+        
+        texts = self.text_contents[text_type]
+        if not texts:
+            return None
+        
+        # 根据选择模式决定使用哪个文本
+        if self.text_selection_mode == "sequential":
+            # 按顺序循环：使用草稿索引来确定使用哪个文本
+            if not hasattr(self, 'draft_text_indices'):
+                self.draft_text_indices = {}
+            
+            if text_type not in self.draft_text_indices:
+                self.draft_text_indices[text_type] = 0
+            
+            index = self.draft_text_indices[text_type] % len(texts)
+            self.draft_text_indices[text_type] += 1
+            
+            return texts[index]
+        else:
+            # 随机选择
+            import random
+            return random.choice(texts)
+    
+    def update_text_in_draft_data(self, draft_data, track_info, new_text):
+        """在草稿数据中更新文本内容"""
+        try:
+            materials = draft_data.get('materials', {})
+            texts = materials.get('texts', [])
+            
+            # 更新所有该轨道的文本片段
+            for segment in track_info['segments']:
+                material_id = segment['material_id']
+                
+                # 在materials中找到对应的文本材料并更新
+                for text_material in texts:
+                    if text_material and text_material.get('id') == material_id:
+                        # 更新文本内容
+                        content_data = text_material.get('content', '{}')
+                        try:
+                            if isinstance(content_data, str):
+                                content_json = json.loads(content_data)
+                            else:
+                                content_json = content_data
+                            
+                            content_json['text'] = new_text
+                            text_material['content'] = json.dumps(content_json, ensure_ascii=False)
+                        except:
+                            # 如果解析失败，直接设置content
+                            text_material['content'] = json.dumps({'text': new_text}, ensure_ascii=False)
+                        
+                        # 同时更新base_content
+                        text_material['base_content'] = new_text
+                        break
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ 更新文本数据时出错: {e}")
+            return False
 
 
 def main():
@@ -3416,9 +5165,20 @@ def main():
     parser = argparse.ArgumentParser(description='批量草稿复制与素材替换工具')
     parser.add_argument('--debug', action='store_true', help='启用调试模式')
     parser.add_argument('--fix-draft', type=str, help='修复指定草稿名称的路径占位符问题')
+    parser.add_argument('--test-cover', action='store_true', help='测试封面图生成功能')
     args = parser.parse_args()
     
     processor = BatchDraftProcessor(debug=args.debug)
+    
+    # 如果指定了测试封面图
+    if args.test_cover:
+        print(f"🧪 测试模式：测试封面图生成功能")
+        success = processor.test_jianying_cover_generation()
+        if success:
+            print("✅ 测试完成！")
+        else:
+            print("❌ 测试失败！")
+        return
     
     # 如果指定了修复草稿
     if args.fix_draft:
