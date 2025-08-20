@@ -20,6 +20,20 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 import pyJianYingDraft as draft
+import platform
+import sys
+
+# Windows控制台编码处理
+if platform.system() == "Windows":
+    try:
+        # 尝试设置控制台编码为UTF-8
+        import locale
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    except:
+        # 如果失败，使用安全的ASCII字符
+        pass
 
 
 class BatchDraftProcessor:
@@ -27,7 +41,15 @@ class BatchDraftProcessor:
     
     def __init__(self, debug=False):
         self.debug = debug  # 调试模式
-        self.draft_folder_path = "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft"
+        
+        # 根据操作系统设置默认草稿文件夹路径
+        if platform.system() == "Windows":
+            self.draft_folder_path = os.path.expanduser("~/AppData/Local/JianyingPro/User Data/Projects/com.lveditor.draft")
+        elif platform.system() == "Darwin":  # macOS
+            self.draft_folder_path = "/Users/dada/Movies/JianyingPro/User Data/Projects/com.lveditor.draft"
+        else:
+            # Linux 或其他系统，使用一个通用路径
+            self.draft_folder_path = os.path.expanduser("~/JianyingPro/User Data/Projects/com.lveditor.draft")
         self.materials_folder_path = None
         self.selected_draft = None
         self.draft_folder = None
@@ -71,29 +93,39 @@ class BatchDraftProcessor:
         self.enable_cover_image = False  # 是否生成封面图
         self.cover_image_style = "timeline_last_frame"  # 封面图样式: "timeline_last_frame", "video_last_frame", "ultrathink"
         self.last_replaced_videos = []  # 记录最近替换的视频文件
+        self.jianying_app_path = None  # 剪映程序路径
         
+    def safe_emoji_print(self, emoji, text):
+        """安全的emoji打印，Windows兼容"""
+        try:
+            print(f"{emoji} {text}")
+        except UnicodeEncodeError:
+            # Windows console fallback without emoji
+            print(f"[*] {text}")
+    
     def print_header(self, title):
         """打印标题"""
         print("\n" + "=" * 70)
-        print(f"🎬 {title}")
+        self.safe_emoji_print("🎬", title)
         print("=" * 70)
     
     def print_section(self, title):
         """打印章节标题"""
-        print(f"\n📋 {title}")
+        print()
+        self.safe_emoji_print("📋", title)
         print("-" * 50)
     
     def print_success(self, message):
         """打印成功信息"""
-        print(f"✅ {message}")
+        self.safe_emoji_print("✅", message)
     
     def print_warning(self, message):
         """打印警告信息"""
-        print(f"⚠️  {message}")
+        self.safe_emoji_print("⚠️", message)
     
     def print_error(self, message):
         """打印错误信息"""
-        print(f"❌ {message}")
+        self.safe_emoji_print("❌", message)
     
     def get_user_input(self, prompt, allow_empty=False, default=None):
         """获取用户输入"""
@@ -154,33 +186,142 @@ class BatchDraftProcessor:
         self.print_header("路径设置")
         
         print(f"当前草稿文件夹: {self.draft_folder_path}")
+        print(f"操作系统: {platform.system()}")
+        
         if not os.path.exists(self.draft_folder_path):
             self.print_error("草稿文件夹不存在!")
-            new_path = self.get_user_input("请输入正确的草稿文件夹路径")
-            if os.path.exists(new_path):
-                self.draft_folder_path = new_path
-                self.print_success("草稿文件夹路径已更新")
-            else:
-                self.print_error("路径仍然无效，请检查后重试")
-                return False
+            
+            # Windows系统特定的提示信息
+            if platform.system() == "Windows":
+                self.print_error("\n🔧 Windows系统常见草稿文件夹位置:")
+                self.print_error("1. 标准位置: %USERPROFILE%\\AppData\\Local\\JianyingPro\\User Data\\Projects\\com.lveditor.draft")
+                expanded_path = os.path.expanduser("~/AppData/Local/JianyingPro/User Data/Projects/com.lveditor.draft")
+                self.print_error(f"2. 展开后路径: {expanded_path}")
+                
+                # 检查一些常见的替代路径
+                alternative_paths = [
+                    os.path.expanduser("~/AppData/Roaming/JianyingPro/User Data/Projects/com.lveditor.draft"),
+                    "C:\\Program Files\\JianyingPro\\User Data\\Projects\\com.lveditor.draft",
+                    "C:\\Program Files (x86)\\JianyingPro\\User Data\\Projects\\com.lveditor.draft"
+                ]
+                
+                print("🔍 正在检查可能的替代路径...")
+                for alt_path in alternative_paths:
+                    if os.path.exists(alt_path):
+                        self.print_success(f"找到可能的路径: {alt_path}")
+                        use_alt = input(f"是否使用此路径? (y/n): ").strip().lower()
+                        if use_alt == 'y':
+                            self.draft_folder_path = alt_path
+                            break
+            
+            if not os.path.exists(self.draft_folder_path):
+                new_path = self.get_user_input("请输入正确的草稿文件夹路径")
+                if os.path.exists(new_path):
+                    self.draft_folder_path = new_path
+                    self.print_success("草稿文件夹路径已更新")
+                else:
+                    self.print_error("路径仍然无效，请检查后重试")
+                    return False
         
         try:
             self.draft_folder = draft.DraftFolder(self.draft_folder_path)
+            # 检测剪映程序路径
+            self.detect_jianying_app_path()
             return True
         except Exception as e:
             self.print_error(f"初始化草稿文件夹失败: {e}")
             return False
     
-    def load_draft_info_from_file(self, draft_name):
-        """从 draft_info.json 文件加载草稿信息"""
-        draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+    def detect_jianying_app_path(self):
+        """检测剪映程序路径，支持多个版本"""
+        if platform.system() == "Windows":
+            # Windows系统可能的剪映程序路径
+            possible_paths = [
+                # 用户提供的5.9版本路径
+                r"C:\Users\yangb\AppData\Local\JianyingPro\Apps\5.9.0.11632",
+                # 其他常见路径模式
+                os.path.expanduser("~/AppData/Local/JianyingPro/Apps"),
+                # 程序文件安装路径
+                "C:/Program Files/JianyingPro/Apps",
+                "C:/Program Files (x86)/JianyingPro/Apps"
+            ]
+            
+            for base_path in possible_paths:
+                if os.path.exists(base_path):
+                    # 如果是Apps文件夹，查找版本子文件夹
+                    if base_path.endswith("Apps"):
+                        try:
+                            # 查找版本文件夹
+                            for item in os.listdir(base_path):
+                                version_path = os.path.join(base_path, item)
+                                if os.path.isdir(version_path) and any(char.isdigit() for char in item):
+                                    self.jianying_app_path = version_path
+                                    if self.debug:
+                                        self.print_success(f"找到剪映程序: {self.jianying_app_path}")
+                                    return self.jianying_app_path
+                        except:
+                            continue
+                    else:
+                        # 直接的版本路径
+                        self.jianying_app_path = base_path
+                        if self.debug:
+                            self.print_success(f"找到剪映程序: {self.jianying_app_path}")
+                        return self.jianying_app_path
+            
+            if self.debug:
+                self.print_warning("未找到剪映程序路径")
         
-        if not os.path.exists(draft_info_path):
+        return None
+    
+    def get_compatible_draft_file_path(self, draft_name):
+        """获取兼容的草稿文件路径 (支持多版本格式)"""
+        draft_folder = os.path.join(self.draft_folder_path, draft_name)
+        
+        # 尝试多种草稿文件格式 (兼容不同版本的剪映)
+        possible_files = [
+            "draft_info.json",      # 剪映6.0+版本
+            "draft_content.json"    # 剪映5.9及以下版本
+        ]
+        
+        for file_name in possible_files:
+            potential_path = os.path.join(draft_folder, file_name)
+            if os.path.exists(potential_path):
+                return potential_path
+        
+        return None
+    
+    def load_draft_info_from_file(self, draft_name):
+        """从草稿文件加载草稿信息 (兼容多个版本的文件格式)"""
+        draft_folder = os.path.join(self.draft_folder_path, draft_name)
+        
+        # 尝试多种草稿文件格式 (兼容不同版本的剪映)
+        possible_files = [
+            "draft_info.json",      # 剪映6.0+版本
+            "draft_content.json"    # 剪映5.9及以下版本
+        ]
+        
+        draft_info_path = None
+        for file_name in possible_files:
+            potential_path = os.path.join(draft_folder, file_name)
+            if os.path.exists(potential_path):
+                draft_info_path = potential_path
+                break
+        
+        if not draft_info_path:
+            if self.debug:
+                self.print_warning(f"草稿 {draft_name} 未找到支持的草稿文件格式")
+                # 列出实际存在的文件以供调试
+                if os.path.exists(draft_folder):
+                    files = os.listdir(draft_folder)
+                    self.print_warning(f"草稿文件夹中的文件: {files}")
             return None
         
         try:
             with open(draft_info_path, 'r', encoding='utf-8') as f:
                 draft_info = json.load(f)
+                
+            if self.debug:
+                self.print_success(f"成功读取草稿文件: {os.path.basename(draft_info_path)}")
             
             # 提取基本信息
             canvas = draft_info.get('canvas_config', {})
@@ -236,11 +377,20 @@ class BatchDraftProcessor:
         
         try:
             draft_list = self.draft_folder.list_drafts()
-            # 过滤掉系统文件和demo草稿
-            filtered_drafts = [d for d in draft_list if not d.startswith('.') and not d.startswith('pyJianYingDraft_Demo')]
+            # 过滤掉系统文件和demo草稿 (Windows兼容性: 过滤隐藏文件夹)
+            filtered_drafts = []
+            for d in draft_list:
+                if not d.startswith('.') and not d.startswith('pyJianYingDraft_Demo'):
+                    # Windows兼容性: 检查是否为有效的草稿文件夹
+                    draft_path = os.path.join(self.draft_folder_path, d)
+                    if os.path.isdir(draft_path):
+                        filtered_drafts.append(d)
             
             if not filtered_drafts:
                 self.print_error("没有找到可用的草稿")
+                self.print_error(f"请检查草稿文件夹路径是否正确: {self.draft_folder_path}")
+                if platform.system() == "Windows":
+                    self.print_error("Windows系统默认路径: ~/AppData/Local/JianyingPro/User Data/Projects/com.lveditor.draft")
                 return False
             
             print(f"📁 草稿文件夹: {self.draft_folder_path}")
@@ -277,6 +427,24 @@ class BatchDraftProcessor:
             
         except Exception as e:
             self.print_error(f"列出草稿失败: {e}")
+            self.print_error(f"当前草稿文件夹路径: {self.draft_folder_path}")
+            
+            if platform.system() == "Windows":
+                self.print_error("\n🔧 Windows系统故障排查指南:")
+                self.print_error("1. 检查剪映是否已安装")
+                self.print_error("2. 确认草稿文件夹路径是否正确")
+                self.print_error("3. 标准路径: %USERPROFILE%\\AppData\\Local\\JianyingPro\\User Data\\Projects\\com.lveditor.draft")
+                self.print_error("4. 确保有足够的文件系统访问权限")
+                alternate_path = input("\n是否要手动输入草稿文件夹路径? (y/n): ").strip().lower()
+                if alternate_path == 'y':
+                    new_path = input("请输入正确的草稿文件夹路径: ").strip()
+                    if os.path.exists(new_path):
+                        self.draft_folder_path = new_path
+                        self.print_success("路径已更新，请重试")
+                        return self.setup_paths() and self.select_source_draft()
+                    else:
+                        self.print_error("提供的路径不存在")
+            
             return False
     
     def setup_materials_folder(self):
@@ -1490,20 +1658,21 @@ class BatchDraftProcessor:
         return replacements
     
     def attempt_direct_json_replacement(self, draft_name, replacements):
-        """直接操作 draft_info.json 进行素材替换"""
+        """直接操作草稿文件进行素材替换 (兼容多版本格式)"""
         try:
-            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            # 使用兼容性方法获取草稿文件路径
+            draft_file_path = self.get_compatible_draft_file_path(draft_name)
             
-            if not os.path.exists(draft_info_path):
-                print(f"    ❌ draft_info.json 不存在: {draft_info_path}")
+            if not draft_file_path:
+                self.print_error(f"草稿文件不存在，已检查 draft_info.json 和 draft_content.json")
                 return False
             
-            # 读取当前的 draft_info.json
-            with open(draft_info_path, 'r', encoding='utf-8') as f:
+            # 读取当前的草稿文件
+            with open(draft_file_path, 'r', encoding='utf-8') as f:
                 draft_info = json.load(f)
             
             # 备份原文件
-            backup_path = draft_info_path + ".backup"
+            backup_path = draft_file_path + ".backup"
             with open(backup_path, 'w', encoding='utf-8') as f:
                 json.dump(draft_info, f, ensure_ascii=False, indent=2)
             
@@ -1522,8 +1691,8 @@ class BatchDraftProcessor:
                         success_count += 1
             
             if success_count > 0:
-                # 保存更新后的 draft_info.json
-                with open(draft_info_path, 'w', encoding='utf-8') as f:
+                # 保存更新后的草稿文件
+                with open(draft_file_path, 'w', encoding='utf-8') as f:
                     json.dump(draft_info, f, ensure_ascii=False, indent=2)
                 
                 print(f"    ✅ 素材替换完成! 成功替换 {success_count}/{len(replacements)} 个素材")
@@ -4851,16 +5020,19 @@ class BatchDraftProcessor:
             return False
     
     def extract_text_tracks_from_draft(self, draft_name):
-        """从草稿中提取文本轨道信息"""
+        """从草稿中提取文本轨道信息 (兼容多版本格式)"""
         try:
-            # 读取草稿文件
-            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            # 使用兼容性方法获取草稿文件路径
+            draft_file_path = self.get_compatible_draft_file_path(draft_name)
             
-            if not os.path.exists(draft_info_path):
-                print(f"❌ 草稿文件不存在: {draft_info_path}")
+            if not draft_file_path:
+                self.print_error(f"草稿文件不存在，已检查 draft_info.json 和 draft_content.json")
                 return []
             
-            with open(draft_info_path, 'r', encoding='utf-8') as f:
+            if self.debug:
+                self.print_success(f"找到草稿文件: {os.path.basename(draft_file_path)}")
+            
+            with open(draft_file_path, 'r', encoding='utf-8') as f:
                 draft_data = json.load(f)
             
             # 获取素材信息
@@ -5006,16 +5178,21 @@ class BatchDraftProcessor:
         return True
     
     def replace_text_in_draft(self, draft_name, text_tracks):
-        """在草稿中执行文本替换"""
+        """在草稿中执行文本替换 (兼容多版本格式)"""
         try:
-            draft_info_path = os.path.join(self.draft_folder_path, draft_name, "draft_info.json")
+            # 使用兼容性方法获取草稿文件路径
+            draft_file_path = self.get_compatible_draft_file_path(draft_name)
+            
+            if not draft_file_path:
+                self.print_error(f"草稿文件不存在，已检查 draft_info.json 和 draft_content.json")
+                return False
             
             # 读取草稿文件
-            with open(draft_info_path, 'r', encoding='utf-8') as f:
+            with open(draft_file_path, 'r', encoding='utf-8') as f:
                 draft_data = json.load(f)
             
             # 备份原文件
-            backup_path = draft_info_path + ".text_backup"
+            backup_path = draft_file_path + ".text_backup"
             with open(backup_path, 'w', encoding='utf-8') as f:
                 json.dump(draft_data, f, ensure_ascii=False, indent=2)
             
@@ -5078,7 +5255,7 @@ class BatchDraftProcessor:
             
             if replacement_success:
                 # 保存修改后的草稿文件
-                with open(draft_info_path, 'w', encoding='utf-8') as f:
+                with open(draft_file_path, 'w', encoding='utf-8') as f:
                     json.dump(draft_data, f, ensure_ascii=False, indent=2)
                 
                 return True
