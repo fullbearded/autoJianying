@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 视频封面图插入工具 (UltraThink效果)
-功能：截取视频最后一帧作为封面图，并插入到视频开头
+功能：截取视频指定时间点的帧作为封面图，并插入到视频开头
+支持：最后一帧（默认）或指定时间点的帧
 """
 
 import os
@@ -23,6 +24,8 @@ class VideoCoverInserter:
         self.cover_duration = 2.0  # 默认封面图显示时长（秒）
         self.cover_duration_mode = "frames"  # 默认使用帧数模式
         self.cover_frames = 2  # 默认前2帧
+        self.cover_source_mode = "last"  # 默认使用最后一帧
+        self.cover_source_time = None  # 指定时间点（秒）
         
     def print_header(self, title):
         """打印标题"""
@@ -342,8 +345,8 @@ class VideoCoverInserter:
             
         return None
         
-    def extract_last_frame(self, video_path, output_path):
-        """提取视频最后一帧"""
+    def extract_frame_from_video(self, video_path, output_path):
+        """从视频中提取指定时间点的帧作为封面图"""
         try:
             # 获取视频信息
             info = self.get_video_info(video_path)
@@ -352,8 +355,22 @@ class VideoCoverInserter:
                 return False
                 
             duration = info['duration']
-            # 提取最后一秒的帧，避免黑帧
-            seek_time = max(0, duration - 1.0)
+            
+            # 根据设置确定提取时间点
+            if self.cover_source_mode == "last":
+                # 提取最后一帧，避免黑帧 (倒数1秒处)
+                seek_time = max(0, duration - 1.0)
+                time_desc = f"最后一帧 (第{duration-1:.1f}秒)"
+            elif self.cover_source_mode == "time" and self.cover_source_time is not None:
+                # 提取指定时间点的帧
+                seek_time = min(max(0, self.cover_source_time), duration - 0.1)
+                time_desc = f"第{seek_time:.1f}秒"
+            else:
+                # 默认回退到最后一帧
+                seek_time = max(0, duration - 1.0)
+                time_desc = f"最后一帧 (第{duration-1:.1f}秒)"
+            
+            print(f"      📸 提取时间点: {time_desc}")
             
             cmd = [
                 'ffmpeg',
@@ -377,7 +394,7 @@ class VideoCoverInserter:
                 return False
                 
         except Exception as e:
-            print(f"❌ 提取前几帧失败: {e}")
+            print(f"❌ 提取封面帧失败: {e}")
             return False
             
     def extract_cover_image_from_video(self, video_path, output_path):
@@ -973,9 +990,13 @@ class VideoCoverInserter:
             cover_image_path = os.path.join(temp_dir, f"{name_without_ext}_cover.jpg")
             cover_video_path = os.path.join(temp_dir, f"{name_without_ext}_cover_video{original_ext}")
             
-            # 4. 提取最后一帧作为封面图
-            print(f"   📸 提取最后一帧作为封面图...")
-            if not self.extract_last_frame(video_path, cover_image_path):
+            # 4. 提取指定时间点的帧作为封面图
+            if self.cover_source_mode == "last":
+                print(f"   📸 提取最后一帧作为封面图...")
+            else:
+                print(f"   📸 提取第{self.cover_source_time}秒的帧作为封面图...")
+            
+            if not self.extract_frame_from_video(video_path, cover_image_path):
                 print(f"❌ 跳过: 封面图提取失败")
                 return False
                 
@@ -1010,7 +1031,31 @@ class VideoCoverInserter:
         """配置处理设置"""
         self.print_header("处理设置")
         
-        # 封面图显示时长
+        # 1. 封面图来源设置
+        source_options = ["视频最后一帧", "指定时间点"]
+        source_idx, source_str = self.get_user_choice(
+            source_options, "选择封面图来源", default_index=0
+        )
+        
+        if source_idx == 0:  # 最后一帧
+            self.cover_source_mode = "last"
+            print(f"✅ 封面来源: 视频最后一帧")
+        else:  # 指定时间点
+            self.cover_source_mode = "time"
+            while True:
+                try:
+                    time_input = self.get_user_input("请输入时间点(秒)", "5.0")
+                    time_value = float(time_input)
+                    if time_value >= 0:
+                        self.cover_source_time = time_value
+                        print(f"✅ 封面来源: 第{time_value}秒的帧")
+                        break
+                    else:
+                        print("❌ 请输入大于等于0的数值")
+                except ValueError:
+                    print("❌ 请输入有效的数字")
+        
+        # 2. 封面图显示时长
         duration_options = ["前2帧", "1秒", "2秒", "3秒", "5秒", "自定义"]
         duration_idx, duration_str = self.get_user_choice(
             duration_options, "选择封面图显示时长", default_index=0
@@ -1071,8 +1116,9 @@ class VideoCoverInserter:
     def run(self):
         """主运行流程"""
         self.print_header("视频封面图插入工具 (UltraThink)")
-        print("🎯 功能: 截取视频最后一帧作为封面图，插入到视频开头")
-        print("✨ 效果: 视频播放时先显示封面图，然后播放原始内容")
+        print("🎯 功能: 截取视频指定时间点的帧作为封面图，插入到视频开头")
+        print("✨ 支持: 最后一帧（默认）或指定时间点的帧")
+        print("🎬 效果: 视频播放时先显示封面图，然后播放原始内容")
         
         # 1. 检查FFmpeg
         if not self.check_ffmpeg():
@@ -1094,6 +1140,14 @@ class VideoCoverInserter:
         print(f"\n📋 处理摘要:")
         print(f"   输入文件夹: {video_folder}")
         print(f"   视频文件数: {len(video_files)}")
+        
+        # 显示封面来源
+        if self.cover_source_mode == "last":
+            print(f"   封面来源: 视频最后一帧")
+        else:
+            print(f"   封面来源: 第{self.cover_source_time}秒的帧")
+            
+        # 显示封面时长
         if hasattr(self, 'cover_duration_mode') and self.cover_duration_mode == "frames":
             print(f"   封面时长: 前{self.cover_frames}帧 (根据视频帧率自动计算)")
         else:
