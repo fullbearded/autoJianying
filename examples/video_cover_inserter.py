@@ -431,33 +431,61 @@ class VideoCoverInserter:
             return self.create_cover_video_fallback(cover_image_path, duration, video_info, output_path)
             
     def create_cover_video_with_audio(self, cover_image_path, cover_frames, video_info, output_path):
-        """创建精确帧数的封面视频（修复版 - 简化音频处理）"""
+        """创建高质量精确帧数的封面视频（保持原始编码质量）"""
         try:
-            print(f"      🎯 创建精确{cover_frames}帧封面视频...")
+            print(f"      🎯 创建高质量{cover_frames}帧封面视频...")
             
             # 获取输出文件扩展名来确定容器格式
             output_ext = os.path.splitext(output_path)[1].lower()
             
             print(f"      📦 目标格式: {output_ext}, 精确帧数: {cover_frames}帧")
+            print(f"      🎨 保持像素格式: {video_info['pixel_format']}")
             
             # 计算精确的帧时长
             frame_duration = cover_frames / video_info['fps']
             print(f"      📊 {cover_frames}帧 @ {video_info['fps']:.2f}fps = {frame_duration:.6f}秒")
             
-            # 基础命令 - 关键修复：使用最简单的方法，无音频
+            # 基础命令 - 高质量保持原始编码参数
             cmd = [
                 'ffmpeg',
                 '-loop', '1',
                 '-i', cover_image_path,
-                '-vframes', str(cover_frames),  # 关键修复：精确控制帧数
+                '-vframes', str(cover_frames),  # 精确控制帧数
                 '-r', str(video_info['fps']),
                 '-s', f"{video_info['width']}x{video_info['height']}",
-                '-c:v', 'libx264',
-                '-pix_fmt', 'yuv420p',  # 兼容格式
-                '-preset', 'fast',
-                '-crf', '18',
-                '-an',  # 关键修复：无音频，简化处理
             ]
+            
+            # 精确匹配原视频编码器
+            if video_info['video_codec'] == 'h264':
+                cmd.extend(['-c:v', 'libx264'])
+            elif video_info['video_codec'] in ['hevc', 'h265']:
+                cmd.extend(['-c:v', 'libx265'])
+            else:
+                cmd.extend(['-c:v', 'libx264'])
+                
+            # 保持原始像素格式（关键）
+            cmd.extend(['-pix_fmt', video_info['pixel_format']])
+            
+            # 智能质量设置：根据原视频参数优化
+            if video_info.get('video_bitrate'):
+                try:
+                    original_bitrate = int(video_info['video_bitrate'])
+                    # 对于封面视频，使用稍高的比特率确保质量
+                    target_bitrate = max(original_bitrate, original_bitrate * 1.5)
+                    cmd.extend(['-b:v', str(int(target_bitrate))])
+                    print(f"      📊 使用比特率模式: {target_bitrate//1000}kbps (原始: {original_bitrate//1000}kbps)")
+                except:
+                    cmd.extend(['-crf', '0'])  # 无损
+                    print(f"      📊 使用无损模式: CRF=0")
+            else:
+                cmd.extend(['-crf', '0'])  # 无损
+                print(f"      📊 使用无损模式: CRF=0")
+            
+            # 高质量编码设置
+            cmd.extend([
+                '-preset', 'veryslow',  # 最高质量预设
+                '-an',  # 无音频，在合并时处理
+            ])
             
             # 根据输出格式添加特定参数
             if output_ext == '.mov':
@@ -467,87 +495,96 @@ class VideoCoverInserter:
             
             cmd.extend(['-y', output_path])
             
-            print(f"      📝 精确帧数命令: {cover_frames}帧 @ {video_info['fps']:.2f}fps")
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode == 0 and os.path.exists(output_path):
-                # 验证生成的视频时长
+                # 验证生成的视频质量
                 verify_info = self.get_video_info(output_path)
                 if verify_info:
                     actual_duration = verify_info['duration']
-                    print(f"      ✅ 封面视频创建成功: {actual_duration:.6f}秒")
+                    print(f"      ✅ 高质量封面视频: {actual_duration:.6f}秒")
+                    print(f"      🎨 输出像素格式: {verify_info['pixel_format']}")
+                    
+                    # 检查像素格式是否保持
+                    if verify_info['pixel_format'] == video_info['pixel_format']:
+                        print(f"      🎉 像素格式完美保持！")
+                    else:
+                        print(f"      ⚠️ 像素格式有变化: {video_info['pixel_format']} → {verify_info['pixel_format']}")
+                        
                 return True
             else:
-                print(f"      ❌ 封面视频创建失败")
+                print(f"      ❌ 高质量封面视频创建失败")
                 if result.stderr:
                     print(f"      错误: {result.stderr[:200]}")
-                return False
+                # 降级到兼容模式
+                print(f"      🔄 尝试兼容模式...")
+                return self.create_cover_video_compatible(cover_image_path, cover_frames, video_info, output_path)
             
         except Exception as e:
-            print(f"      ❌ 精确帧数封面视频创建异常: {e}")
+            print(f"      ❌ 高质量封面视频创建异常: {e}")
             return self.create_cover_video_compatible(cover_image_path, cover_frames, video_info, output_path)
             
     def create_cover_video_compatible(self, cover_image_path, cover_frames, video_info, output_path):
-        """兼容性备选方案（保持最大兼容性，使用精确帧数）"""
+        """高质量兼容性备选方案（智能像素格式处理）"""
         try:
-            print(f"      🔄 使用兼容性模式（精确{cover_frames}帧）...")
+            print(f"      🔄 使用高质量兼容模式（{cover_frames}帧）...")
             
             cmd = [
                 'ffmpeg',
                 '-loop', '1',
                 '-i', cover_image_path,
-                '-vframes', str(cover_frames),  # 关键修复：使用精确帧数
+                '-vframes', str(cover_frames),  # 精确帧数控制
                 '-r', str(video_info['fps']),
                 '-s', f"{video_info['width']}x{video_info['height']}",
             ]
             
-            # 使用兼容的视频编码设置
+            # 智能编码器选择
             if video_info['video_codec'] == 'h264':
                 cmd.extend(['-c:v', 'libx264'])
             elif video_info['video_codec'] in ['hevc', 'h265']:
                 cmd.extend(['-c:v', 'libx265'])
             else:
-                cmd.extend(['-c:v', 'libx264'])  # 默认使用h264兼容性最好
+                cmd.extend(['-c:v', 'libx264'])
                 
-            # 使用高质量设置
-            cmd.extend(['-preset', 'medium', '-crf', '18'])
-            
-            # 像素格式兼容性处理
-            if video_info['pixel_format'] in ['yuv420p', 'yuv422p', 'yuv444p']:
-                cmd.extend(['-pix_fmt', video_info['pixel_format']])
-            elif 'yuv' in video_info['pixel_format']:
-                # 对于特殊的YUV格式，使用最接近的兼容格式
-                if '444' in video_info['pixel_format']:
-                    cmd.extend(['-pix_fmt', 'yuv444p'])
-                elif '422' in video_info['pixel_format']:
-                    cmd.extend(['-pix_fmt', 'yuv422p'])
-                else:
-                    cmd.extend(['-pix_fmt', 'yuv420p'])
+            # 智能像素格式处理（尽量保持原格式）
+            original_pix_fmt = video_info['pixel_format']
+            if original_pix_fmt in ['yuv420p', 'yuv422p', 'yuv444p', 'yuvj420p', 'yuvj422p', 'yuvj444p']:
+                cmd.extend(['-pix_fmt', original_pix_fmt])
+                print(f"      🎨 保持原始像素格式: {original_pix_fmt}")
+            elif 'yuv444' in original_pix_fmt:
+                cmd.extend(['-pix_fmt', 'yuv444p'])
+                print(f"      🎨 使用兼容格式: yuv444p (原始: {original_pix_fmt})")
+            elif 'yuv422' in original_pix_fmt:
+                cmd.extend(['-pix_fmt', 'yuv422p'])
+                print(f"      🎨 使用兼容格式: yuv422p (原始: {original_pix_fmt})")
             else:
-                cmd.extend(['-pix_fmt', 'yuv420p'])  # 最安全的备选
+                cmd.extend(['-pix_fmt', 'yuv420p'])
+                print(f"      🎨 使用安全格式: yuv420p (原始: {original_pix_fmt})")
             
-            # 音频处理 - 精确时长匹配帧数（关键修复）
-            if video_info['has_audio']:
-                frame_duration = cover_frames / video_info['fps']
-                cmd.extend([
-                    '-f', 'lavfi',
-                    '-i', f"anullsrc=channel_layout={video_info['channel_layout']}:sample_rate={video_info['sample_rate']}:duration={frame_duration}",
-                    '-c:a', 'aac',  # 使用AAC确保兼容性
-                    '-b:a', '128k',
-                    '-ar', str(video_info['sample_rate']),
-                    '-ac', str(video_info['channels']),
-                    '-shortest'  # 音频长度匹配视频帧数
-                ])
-            else:
-                cmd.extend(['-an'])  # 无音频
+            # 高质量设置（比之前更好）
+            cmd.extend(['-preset', 'slow', '-crf', '3'])  # 比之前的CRF 18更好
+            
+            # 简化音频处理 - 无音频，在合并时处理
+            cmd.extend(['-an'])
                 
             cmd.extend(['-movflags', '+faststart', '-y', output_path])
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            return result.returncode == 0 and os.path.exists(output_path)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                # 验证兼容模式结果
+                verify_info = self.get_video_info(output_path)
+                if verify_info:
+                    print(f"      ✅ 兼容模式成功: {verify_info['duration']:.6f}秒")
+                    print(f"      🎨 输出像素格式: {verify_info['pixel_format']}")
+                return True
+            else:
+                print(f"      ❌ 兼容模式失败")
+                if result.stderr:
+                    print(f"      错误: {result.stderr[:150]}")
+                return False
             
         except Exception as e:
-            print(f"❌ 兼容性模式失败: {e}")
+            print(f"❌ 兼容性模式异常: {e}")
             return False
     
     def create_cover_video_no_audio(self, cover_image_path, cover_frames, video_info, output_path):
@@ -651,9 +688,9 @@ class VideoCoverInserter:
             return False
             
     def merge_videos(self, cover_video_path, original_video_path, output_path, video_info):
-        """修复版本：简单可靠的视频合并方法"""
+        """高质量视频合并方法 - 优先无损合并"""
         try:
-            print(f"      🔗 开始合并视频...")
+            print(f"      🔗 开始高质量合并...")
             
             # 获取封面视频和原视频信息
             cover_info = self.get_video_info(cover_video_path)
@@ -670,7 +707,14 @@ class VideoCoverInserter:
             expected_duration = cover_info['duration'] + original_info['duration']
             print(f"         预期总计: {expected_duration:.6f}秒")
             
-            # 使用简单的filter_complex方法（修复版）
+            # 方法1: 优先尝试concat demuxer（完全无损）
+            if self.try_concat_demuxer_lossless(cover_video_path, original_video_path, output_path):
+                print(f"      ✅ 无损concat合并成功")
+                return True
+            
+            # 方法2: 高质量重编码合并
+            print(f"      🔄 使用高质量重编码合并...")
+            
             cmd = [
                 'ffmpeg',
                 '-i', cover_video_path,
@@ -678,17 +722,42 @@ class VideoCoverInserter:
                 '-filter_complex', '[0:v][1:v]concat=n=2:v=1[outv]',
                 '-map', '[outv]',
                 '-map', '1:a',  # 直接使用原视频的音频
-                '-c:v', 'libx264',
-                '-crf', '18',  # 高质量
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-preset', 'fast',
+            ]
+            
+            # 精确匹配原视频编码设置
+            if video_info['video_codec'] == 'h264':
+                cmd.extend(['-c:v', 'libx264'])
+            elif video_info['video_codec'] in ['hevc', 'h265']:
+                cmd.extend(['-c:v', 'libx265'])
+            else:
+                cmd.extend(['-c:v', 'libx264'])
+            
+            # 保持原始像素格式和高质量
+            cmd.extend(['-pix_fmt', video_info['pixel_format']])
+            
+            # 智能质量设置：根据原视频比特率决定
+            if video_info.get('video_bitrate'):
+                try:
+                    original_bitrate = int(video_info['video_bitrate'])
+                    # 使用原始比特率的1.2倍确保质量
+                    target_bitrate = max(original_bitrate, original_bitrate * 1.2)
+                    cmd.extend(['-b:v', str(int(target_bitrate))])
+                    print(f"      📊 使用比特率模式: {target_bitrate//1000}kbps")
+                except:
+                    cmd.extend(['-crf', '1'])
+                    print(f"      📊 使用CRF模式: 1 (接近无损)")
+            else:
+                cmd.extend(['-crf', '1'])
+                print(f"      📊 使用CRF模式: 1 (接近无损)")
+                
+            cmd.extend([
+                '-preset', 'slow',  # 高质量预设
+                '-c:a', 'copy',     # 音频流复制，完全无损
                 '-avoid_negative_ts', 'make_zero',
                 '-y',
                 output_path
-            ]
+            ])
             
-            print(f"      📝 执行简化合并...")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             
             if result.returncode == 0 and os.path.exists(output_path):
@@ -702,15 +771,16 @@ class VideoCoverInserter:
                     print(f"         实际输出: {actual_duration:.6f}秒")
                     print(f"         预期时长: {expected_duration:.6f}秒")
                     print(f"         误差: {duration_diff:.6f}秒")
+                    print(f"         像素格式: {final_info['pixel_format']}")
                     
                     if duration_diff < 0.2:  # 允许0.2秒误差
-                        print(f"      ✅ 合并成功")
+                        print(f"      ✅ 高质量合并成功")
                         return True
                     else:
                         print(f"      ⚠️ 时长误差较大，但可能是编码精度问题")
                         return True  # 继续处理，可能是编码精度问题
                         
-            print(f"      ❌ 合并失败")
+            print(f"      ❌ 高质量合并失败")
             if result.stderr:
                 print(f"      错误: {result.stderr[:300]}")
             return False
@@ -967,10 +1037,19 @@ class VideoCoverInserter:
             
         # 获取容器格式信息
         container_format = video_info['format_info'].get('format_name', '').lower()
+        # 计算原始文件大小
+        try:
+            original_size_bytes = int(video_info['format_info'].get('size', 0))
+            original_size_mb = original_size_bytes / (1024 * 1024)
+        except (ValueError, TypeError):
+            original_size_mb = 0
+        
         print(f"   📊 视频信息: {video_info['width']}x{video_info['height']}, "
               f"{video_info['duration']:.1f}s, {video_info['fps']:.1f}fps")
         print(f"   🎥 编码信息: {video_info['video_codec']}, 音频: {'有' if video_info['has_audio'] else '无'}")
         print(f"   📦 容器格式: {container_format}")
+        print(f"   📂 原始文件: {original_size_mb:.1f}MB")
+        print(f"   🎨 像素格式: {video_info['pixel_format']} (将保持不变)")
         
         # 2. 确定封面帧数（修复关键逻辑）
         if hasattr(self, 'cover_duration_mode') and self.cover_duration_mode == "frames":
@@ -1018,9 +1097,29 @@ class VideoCoverInserter:
                 print(f"❌ 跳过: 视频合并失败")
                 return False
                 
-            print(f"   ✅ 完成: {output_filename}")
+            # 7. 验证输出质量
+            final_info = self.get_video_info(output_path)
+            if final_info:
+                try:
+                    final_size_bytes = int(final_info['format_info'].get('size', 0))
+                    final_size_mb = final_size_bytes / (1024 * 1024)
+                except (ValueError, TypeError):
+                    final_size_mb = 0
+                size_ratio = final_size_mb / original_size_mb if original_size_mb > 0 else 0
+                
+                print(f"   ✅ 完成: {output_filename}")
+                print(f"   📊 质量对比:")
+                print(f"      文件大小: {original_size_mb:.1f}MB → {final_size_mb:.1f}MB (比例: {size_ratio:.2f}x)")
+                print(f"      像素格式: {video_info['pixel_format']} → {final_info['pixel_format']}")
+                
+                if size_ratio > 0.8:
+                    print(f"   🎉 质量保持良好！")
+                elif size_ratio > 0.5:
+                    print(f"   ⚠️ 文件有一定压缩，建议使用无损版本")
+                else:
+                    print(f"   ❌ 文件明显压缩，强烈建议使用无损版本！")
             
-            # 7. 保存独立的封面图
+            # 8. 保存独立的封面图
             cover_jpg_path = os.path.join(output_folder, f"{name_without_ext}_cover.jpg")
             shutil.copy2(cover_image_path, cover_jpg_path)
             print(f"   💾 封面图已保存: {name_without_ext}_cover.jpg")
@@ -1119,6 +1218,7 @@ class VideoCoverInserter:
         print("🎯 功能: 截取视频指定时间点的帧作为封面图，插入到视频开头")
         print("✨ 支持: 最后一帧（默认）或指定时间点的帧")
         print("🎬 效果: 视频播放时先显示封面图，然后播放原始内容")
+        print("📋 提示: 如需完全无损处理，请使用 video_cover_inserter_lossless.py")
         
         # 1. 检查FFmpeg
         if not self.check_ffmpeg():
