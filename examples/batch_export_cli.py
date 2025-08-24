@@ -39,6 +39,10 @@ class BatchExportCLI:
         self.long_delay = 5.0       # 长操作延迟
         self.short_delay = 1.0      # 短操作延迟
         
+        # 错误处理设置
+        self.auto_skip_missing = True   # 自动跳过不存在的草稿
+        self.show_smart_suggestions = True  # 显示智能建议
+        
     def print_header(self, title):
         """打印标题"""
         print("\n" + "="*50)
@@ -131,7 +135,30 @@ class BatchExportCLI:
             draft_list = self.draft_folder.list_drafts()
             # 过滤掉系统文件和demo草稿
             filtered_drafts = [d for d in draft_list if not d.startswith('.') and not d.startswith('pyJianYingDraft_Demo')]
-            return filtered_drafts
+            
+            # 验证草稿有效性
+            valid_drafts = []
+            invalid_drafts = []
+            
+            for draft_name in filtered_drafts:
+                try:
+                    # 检查草稿文件夹是否包含必要文件
+                    draft_path = os.path.join(self.draft_folder.folder_path, draft_name)
+                    if os.path.exists(os.path.join(draft_path, "draft_content.json")):
+                        valid_drafts.append(draft_name)
+                    else:
+                        invalid_drafts.append(draft_name)
+                except:
+                    invalid_drafts.append(draft_name)
+            
+            if invalid_drafts:
+                print(f"⚠️  发现 {len(invalid_drafts)} 个无效草稿，将自动跳过:")
+                for draft_name in invalid_drafts:
+                    print(f"  - {draft_name}")
+                print()
+            
+            return valid_drafts
+            
         except Exception as e:
             self.print_error(f"获取草稿列表失败: {e}")
             return []
@@ -208,6 +235,36 @@ class BatchExportCLI:
                 
         return resolution, framerate
         
+    def select_error_handling_mode(self):
+        """选择错误处理模式"""
+        self.print_header("错误处理设置")
+        
+        print("当遇到草稿不存在等错误时:")
+        print("1. 自动跳过继续下一个 (推荐)")
+        print("2. 每次询问用户操作")
+        
+        while True:
+            try:
+                choice = input("请选择错误处理模式 (1-2, 默认1): ").strip()
+                if not choice:
+                    choice = "1"
+                    
+                choice = int(choice)
+                
+                if choice == 1:
+                    self.auto_skip_missing = True
+                    print("✅ 已设置为自动跳过模式")
+                    break
+                elif choice == 2:
+                    self.auto_skip_missing = False 
+                    print("✅ 已设置为询问模式")
+                    break
+                else:
+                    self.print_error("请输入1或2")
+                    
+            except ValueError:
+                self.print_error("请输入有效的数字")
+    
     def select_draft_action(self):
         """选择草稿处理方式"""
         self.print_header("草稿处理选项")
@@ -215,6 +272,7 @@ class BatchExportCLI:
         print("导出完成后对草稿的处理:")
         print("1. 保留草稿")
         print("2. 删除草稿")
+        print("⚠️  注意: 删除草稿后无法恢复，请谨慎选择")
         
         while True:
             try:
@@ -224,7 +282,14 @@ class BatchExportCLI:
                 if choice == 1:
                     return False  # 不删除
                 elif choice == 2:
-                    return True   # 删除
+                    # 二次确认删除操作
+                    print("\n⚠️  您选择了删除草稿，此操作不可恢复!")
+                    confirm = input("请再次确认是否要删除导出成功的草稿? (y/n): ").lower().strip()
+                    if confirm in ['y', 'yes', '是']:
+                        return True   # 删除
+                    else:
+                        print("已取消删除，将保留草稿")
+                        return False  # 不删除
                 else:
                     self.print_error("请输入1或2")
                     
@@ -241,6 +306,146 @@ class BatchExportCLI:
             return choice == 'y'
         return True
         
+    def safe_return_to_home(self, ctrl):
+        """安全回到目录页"""
+        try:
+            print("🔄 尝试回到目录页...")
+            # 确保重新获取窗口状态
+            ctrl.get_window()
+            # 尝试回到主页
+            ctrl.switch_to_home()
+            print("✅ 已成功回到目录页")
+            return True
+        except Exception as e:
+            self.print_warning(f"自动回到目录页失败: {e}")
+            self.print_warning("请手动回到剪映目录页后继续")
+            return False
+    
+    def should_auto_skip(self, error_msg):
+        """判断是否应该自动跳过该错误"""
+        auto_skip_errors = [
+            "未找到名为",  # 草稿不存在
+            "草稿不存在",
+            "DraftNotFound",  # 异常类型
+            "文件夹不存在", 
+            "路径不存在",
+            "draft not found",
+            "file not found",
+            "no such file"
+        ]
+        
+        error_str = str(error_msg).lower()
+        for skip_error in auto_skip_errors:
+            if skip_error.lower() in error_str:
+                return True
+        return False
+    
+    def should_auto_retry(self, error_msg):
+        """判断是否应该自动重试该错误"""
+        retry_errors = [
+            "导出按钮",  # UI元素未找到，可能需要重试
+            "导出窗口",
+            "剪映窗口未找到",
+            "timeout",
+            "超时",
+            "网络",
+            "connection"
+        ]
+        
+        error_str = str(error_msg).lower()  
+        for retry_error in retry_errors:
+            if retry_error.lower() in error_str:
+                return True
+        return False
+    
+    def handle_export_interruption(self, ctrl, draft_name, error):
+        """处理导出中断"""
+        self.print_error(f"导出 {draft_name} 时发生错误: {error}")
+        
+        # 检查是否为可自动跳过的错误
+        if self.should_auto_skip(error) and self.auto_skip_missing:
+            print(f"🔄 检测到草稿不存在错误，自动跳过继续下一个")
+            # 尝试回到目录页
+            self.safe_return_to_home(ctrl)
+            return 'continue'
+        
+        # 检查是否为可自动重试的错误
+        if self.should_auto_retry(error):
+            print(f"🔄 检测到可重试错误，建议重试")
+            # 尝试回到目录页
+            self.safe_return_to_home(ctrl)
+            print(f"💡 建议操作: 重试当前草稿")
+        
+        # 尝试自动回到目录页
+        if not self.safe_return_to_home(ctrl):
+            # 如果自动回退失败，询问用户
+            print(f"\n⚠️  导出 {draft_name} 失败，需要回到目录页继续后续操作")
+            print("请手动回到剪映目录页，然后选择操作:")
+        else:
+            # 自动回退成功，询问用户后续操作
+            print(f"⚠️  导出 {draft_name} 失败，已回到目录页")
+        
+        # 提供智能建议
+        if self.should_auto_retry(error):
+            print("💡 建议: 这是一个临时性错误，建议选择重试 (r)")
+        else:
+            print("💡 建议: 可能是草稿或设置问题，建议跳过继续 (c)")
+            
+        while True:
+            choice = input("请选择: (c)继续下一个 / (r)重试当前 / (s)停止批量导出: ").lower().strip()
+            if choice in ['c', 'continue', '继续']:
+                return 'continue'
+            elif choice in ['r', 'retry', '重试']:
+                return 'retry'
+            elif choice in ['s', 'stop', '停止']:
+                return 'stop'
+            else:
+                print("请输入 c(继续) / r(重试) / s(停止)")
+    
+    def export_single_draft(self, ctrl, draft_name, export_path, resolution, framerate):
+        """导出单个草稿，包含重试逻辑"""
+        max_retries = 2
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    print(f"🔄 第 {attempt + 1} 次尝试导出 {draft_name}")
+                    # 重试前先确保回到目录页
+                    if not self.safe_return_to_home(ctrl):
+                        return False
+                    time.sleep(self.automation_delay)
+                
+                print(f"⏱️  等待 {self.automation_delay}秒 (自动化延迟)...")
+                time.sleep(self.automation_delay)
+                
+                # 导出草稿
+                print(f"🚀 开始导出草稿...")
+                ctrl.export_draft(draft_name, export_path, 
+                                resolution=resolution, 
+                                framerate=framerate)
+                
+                print(f"⏱️  等待 {self.long_delay}秒 (导出后延迟)...")
+                time.sleep(self.long_delay)
+                
+                return True
+                
+            except KeyboardInterrupt:
+                print(f"\n⚠️  用户中断了 {draft_name} 的导出")
+                raise
+            except Exception as e:
+                if attempt < max_retries:
+                    self.print_warning(f"导出尝试 {attempt + 1} 失败: {e}")
+                    self.print_warning(f"将进行第 {attempt + 2} 次尝试...")
+                    
+                    # 尝试回到目录页准备重试
+                    self.safe_return_to_home(ctrl)
+                    time.sleep(self.short_delay)
+                else:
+                    # 所有重试都失败了
+                    raise e
+        
+        return False
+    
     def export_drafts(self, drafts_to_export, resolution, framerate, delete_after_export):
         """批量导出草稿"""
         self.print_header("开始批量导出")
@@ -250,6 +455,7 @@ class BatchExportCLI:
             
         print(f"准备导出 {len(drafts_to_export)} 个草稿...")
         print("⚠️  请确保剪映已打开并位于目录页")
+        print("💡 导出过程中如遇问题，脚本会尝试自动回到目录页继续")
         
         input("准备就绪后按回车键开始导出...")
         
@@ -259,43 +465,92 @@ class BatchExportCLI:
             
             success_count = 0
             failed_drafts = []
+            skipped_drafts = []
             
-            for i, draft_name in enumerate(drafts_to_export, 1):
-                print(f"\n[{i}/{len(drafts_to_export)}] 正在导出: {draft_name}")
+            i = 0
+            while i < len(drafts_to_export):
+                draft_name = drafts_to_export[i]
+                print(f"\n[{i+1}/{len(drafts_to_export)}] 正在处理: {draft_name}")
                 
                 try:
                     # 设置导出路径
                     export_path = os.path.join(self.export_folder, f"{draft_name}.mp4")
                     
-                    print(f"⏱️  等待 {self.automation_delay}秒 (自动化延迟)...")
-                    time.sleep(self.automation_delay)
+                    # 导出单个草稿
+                    if self.export_single_draft(ctrl, draft_name, export_path, resolution, framerate):
+                        self.print_success(f"导出成功: {export_path}")
+                        success_count += 1
+                        
+                        # 如果选择删除草稿
+                        if delete_after_export:
+                            try:
+                                print(f"⏱️  等待 {self.short_delay}秒后删除草稿...")
+                                time.sleep(self.short_delay)
+                                
+                                # 确保草稿文件夹存在再删除
+                                if self.draft_folder.has_draft(draft_name):
+                                    self.draft_folder.remove(draft_name)
+                                    print(f"🗑️  已删除草稿: {draft_name}")
+                                    
+                                    # 验证删除是否成功
+                                    if self.draft_folder.has_draft(draft_name):
+                                        self.print_warning(f"草稿 {draft_name} 删除可能未成功，请检查")
+                                    else:
+                                        print(f"✅ 确认草稿 {draft_name} 已完全删除")
+                                else:
+                                    self.print_warning(f"草稿 {draft_name} 不存在，无法删除")
+                                    
+                            except PermissionError as e:
+                                self.print_warning(f"删除草稿失败 - 权限不足: {e}")
+                                self.print_warning("可能剪映仍在使用该草稿，请关闭剪映后手动删除")
+                            except Exception as e:
+                                self.print_warning(f"删除草稿失败: {e}")
+                                self.print_warning(f"草稿路径: {os.path.join(self.draft_folder.folder_path, draft_name)}")
+                        
+                        # 成功后移到下一个
+                        i += 1
+                    else:
+                        # 导出失败，进入中断处理流程
+                        action = self.handle_export_interruption(ctrl, draft_name, "多次重试均失败")
+                        if action == 'continue':
+                            failed_drafts.append(draft_name)
+                            i += 1
+                        elif action == 'retry':
+                            # 保持当前索引，重新尝试
+                            continue
+                        elif action == 'stop':
+                            # 停止批量导出
+                            self.print_warning("用户选择停止批量导出")
+                            skipped_drafts.extend(drafts_to_export[i+1:])
+                            break
                     
-                    # 导出草稿
-                    print(f"🚀 开始导出草稿...")
-                    ctrl.export_draft(draft_name, export_path, 
-                                    resolution=resolution, 
-                                    framerate=framerate)
-                    
-                    print(f"⏱️  等待 {self.long_delay}秒 (导出后延迟)...")
-                    time.sleep(self.long_delay)
-                    
-                    self.print_success(f"导出成功: {export_path}")
-                    success_count += 1
-                    
-                    # 如果选择删除草稿
-                    if delete_after_export:
-                        try:
-                            print(f"⏱️  等待 {self.short_delay}秒后删除草稿...")
-                            time.sleep(self.short_delay)
-                            self.draft_folder.delete_draft(draft_name)
-                            print(f"🗑️  已删除草稿: {draft_name}")
-                        except Exception as e:
-                            self.print_warning(f"删除草稿失败: {e}")
-                    
+                except KeyboardInterrupt:
+                    print(f"\n⚠️  用户中断操作")
+                    # 处理中断
+                    action = self.handle_export_interruption(ctrl, draft_name, "用户中断")
+                    if action == 'continue':
+                        failed_drafts.append(draft_name)
+                        i += 1
+                    elif action == 'retry':
+                        continue
+                    elif action == 'stop':
+                        self.print_warning("用户选择停止批量导出")
+                        skipped_drafts.extend(drafts_to_export[i+1:])
+                        break
+                        
                 except Exception as e:
-                    self.print_error(f"导出失败: {e}")
-                    failed_drafts.append(draft_name)
-                    
+                    # 处理其他异常
+                    action = self.handle_export_interruption(ctrl, draft_name, str(e))
+                    if action == 'continue':
+                        failed_drafts.append(draft_name)
+                        i += 1
+                    elif action == 'retry':
+                        continue
+                    elif action == 'stop':
+                        self.print_warning("用户选择停止批量导出")
+                        skipped_drafts.extend(drafts_to_export[i+1:])
+                        break
+                        
             # 显示导出结果
             self.print_header("导出完成")
             print(f"✅ 成功导出: {success_count} 个草稿")
@@ -304,6 +559,12 @@ class BatchExportCLI:
                 print(f"❌ 导出失败: {len(failed_drafts)} 个草稿")
                 print("失败的草稿:")
                 for draft_name in failed_drafts:
+                    print(f"  - {draft_name}")
+            
+            if skipped_drafts:
+                print(f"⏭️  跳过导出: {len(skipped_drafts)} 个草稿")
+                print("跳过的草稿:")
+                for draft_name in skipped_drafts:
                     print(f"  - {draft_name}")
                     
             return success_count > 0
@@ -345,6 +606,9 @@ class BatchExportCLI:
         # 选择导出设置
         resolution, framerate = self.select_export_settings()
         
+        # 选择错误处理模式
+        self.select_error_handling_mode()
+        
         # 选择草稿处理方式
         delete_after_export = self.select_draft_action()
         
@@ -358,6 +622,7 @@ class BatchExportCLI:
         print(f"分辨率: {resolution}")
         print(f"帧率: {framerate} (默认)")
         print(f"导出后: {'删除草稿' if delete_after_export else '保留草稿'}")
+        print(f"错误处理: {'自动跳过' if self.auto_skip_missing else '询问用户'}")
         print(f"自动化延迟: {self.automation_delay}秒 / {self.long_delay}秒 / {self.short_delay}秒")
         
         confirm = input("\n确认开始导出? (y/n): ").strip().lower()
