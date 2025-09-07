@@ -418,10 +418,31 @@ class BatchDraftProcessor:
             # 显示源草稿的视频素材信息
             draft_info = self.load_draft_info_from_file(self.selected_draft)
             if draft_info and draft_info['video_materials']:
-                print(f"\n📹 源草稿包含 {len(draft_info['video_materials'])} 个视频素材:")
-                for i, video in enumerate(draft_info['video_materials']):
-                    duration_sec = video['duration'] / 1000000 if video['duration'] else 0
-                    print(f"  {i+1}. {video['name']} ({video['width']}x{video['height']}, {duration_sec:.1f}s)")
+                # 过滤掉复合片段和以_开头的素材
+                filtered_materials = []
+                for video in draft_info['video_materials']:
+                    video_name = video['name']
+                    if "复合片段" not in video_name and not video_name.startswith("_"):
+                        filtered_materials.append(video)
+                
+                print(f"\n📹 源草稿包含 {len(draft_info['video_materials'])} 个素材:")
+                for i, material in enumerate(draft_info['video_materials']):
+                    duration_sec = material['duration'] / 1000000 if material['duration'] else 0
+                    material_name = material['name']
+                    
+                    # 判断素材类型
+                    is_image = material_name.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif'))
+                    material_type = "图片" if is_image else "视频"
+                    
+                    # 标记被过滤的素材
+                    if "复合片段" in material_name or material_name.startswith("_"):
+                        print(f"  {i+1}. {material_name} ({material['width']}x{material['height']}, {duration_sec:.1f}s) [{material_type}] [已过滤]")
+                    else:
+                        print(f"  {i+1}. {material_name} ({material['width']}x{material['height']}, {duration_sec:.1f}s) [{material_type}]")
+                
+                if len(filtered_materials) < len(draft_info['video_materials']):
+                    print(f"\n💡 在下一步的替换时，将默认过滤掉复合片段和以_开头的视频素材")
+                    print(f"📊 实际参与替换: {len(filtered_materials)} 个素材")
             
             return True
             
@@ -896,12 +917,12 @@ class BatchDraftProcessor:
         enable_idx, enable_str = self.get_user_choice(enable_options, "是否添加音频", default_index=1)
         
         if enable_idx == 1:  # 选择"否"
-            self.enable_audio = False
+            self.enable_audio_subtitle = False
             self.enable_subtitles = False
             print("✅ 跳过音频功能")
             return True
         
-        self.enable_audio = True
+        self.enable_audio_subtitle = True
         print("✅ 启用音频功能")
         
         # 设置音频文件夹路径
@@ -1236,30 +1257,74 @@ class BatchDraftProcessor:
         if hasattr(self, 'selected_draft') and self.selected_draft:
             draft_info = self.load_draft_info_from_file(self.selected_draft)
             if draft_info and 'video_materials' in draft_info:
-                for video in draft_info['video_materials']:
-                    name = video.get('name', '')
-                    # 匹配 partN.mp4 格式
+                for material in draft_info['video_materials']:
+                    name = material.get('name', '')
+                    
+                    # 过滤掉复合片段和以_开头的素材
+                    if "复合片段" in name or name.startswith("_"):
+                        continue
+                    
+                    # 匹配各种part格式: partN.mp4, partbgN.jpg 等
                     import re
-                    match = re.match(r'part(\d+)\.mp4', name)
+                    # 匹配 partN.mp4 或 partbgN.jpg 等格式
+                    match = re.match(r'(part\d+|partbg\d+)\.\w+', name)
                     if match:
-                        part_num = int(match.group(1))
-                        part_folder = f'part{part_num}'
+                        part_folder = match.group(1)
                         if part_folder not in part_folders:
                             part_folders.append(part_folder)
+                            
+            # 同时检查所有材料类型（包括图片）
+            if draft_info and 'raw_data' in draft_info and 'materials' in draft_info['raw_data']:
+                materials = draft_info['raw_data']['materials']
+                
+                # 检查图片和贴纸素材
+                for material_type in ['images', 'stickers']:
+                    if material_type in materials:
+                        for image in materials[material_type]:
+                            if isinstance(image, dict):
+                                name = image.get('material_name', image.get('name', ''))
+                                
+                                # 过滤掉复合片段和以_开头的素材
+                                if "复合片段" in name or name.startswith("_"):
+                                    continue
+                                
+                                # 匹配 partbgN.jpg 等格式
+                                match = re.match(r'(part\d+|partbg\d+)\.\w+', name)
+                                if match:
+                                    part_folder = match.group(1)
+                                    if part_folder not in part_folders:
+                                        part_folders.append(part_folder)
         
         # 如果没有从草稿中发现，扫描materials文件夹
         if not part_folders and self.materials_folder_path:
             materials_path = Path(self.materials_folder_path)
             for item in materials_path.iterdir():
-                if item.is_dir() and item.name.startswith('part') and item.name[4:].isdigit():
-                    part_folders.append(item.name)
+                # 匹配 partN 或 partbgN 格式的文件夹
+                if item.is_dir():
+                    import re
+                    if re.match(r'part\d+$', item.name) or re.match(r'partbg\d+$', item.name):
+                        part_folders.append(item.name)
         
         # 默认至少包含part1-part3
         if not part_folders:
             part_folders = ['part1', 'part2', 'part3']
         
-        # 按数字排序
-        part_folders.sort(key=lambda x: int(x[4:]) if x[4:].isdigit() else 999)
+        # 按数字排序：part1, part2, partbg1, partbg2...
+        def sort_key(folder_name):
+            import re
+            # 匹配 partN 格式
+            match = re.match(r'part(\d+)$', folder_name)
+            if match:
+                return (0, int(match.group(1)))  # part类型优先级为0
+            
+            # 匹配 partbgN 格式
+            match = re.match(r'partbg(\d+)$', folder_name)
+            if match:
+                return (1, int(match.group(1)))  # partbg类型优先级为1
+            
+            return (999, 0)  # 其他类型排在最后
+        
+        part_folders.sort(key=sort_key)
         
         if self.debug:
             print(f"    🔍 DEBUG 发现part文件夹: {part_folders}")
@@ -1296,35 +1361,135 @@ class BatchDraftProcessor:
             else:
                 print(f"📁 文件夹已存在: {folder}")
             
+            # 根据文件夹类型决定扫描的文件类型
+            if folder == 'background' or folder.startswith('partbg'):
+                # 背景文件夹只扫描图片文件
+                scan_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+                file_type_desc = "图片文件"
+            else:
+                # part文件夹只扫描视频文件
+                scan_extensions = ['*.mp4', '*.mov', '*.avi', '*.mkv']
+                file_type_desc = "视频文件"
+            
             # 扫描对应的文件类型
             all_files = []
-            for ext in file_extensions:
+            for ext in scan_extensions:
                 files = glob.glob(os.path.join(folder_path, ext))
                 all_files.extend(files)
             
             part_files[folder] = [os.path.basename(f) for f in all_files]
             
-            if folder == 'background':
-                print(f"  └── 找到 {len(part_files[folder])} 个图片文件: {part_files[folder][:3]}{'...' if len(part_files[folder]) > 3 else ''}")
-            else:
-                print(f"  └── 找到 {len(part_files[folder])} 个视频文件: {part_files[folder][:3]}{'...' if len(part_files[folder]) > 3 else ''}")
+            print(f"  └── 找到 {len(part_files[folder])} 个{file_type_desc}: {part_files[folder][:3]}{'...' if len(part_files[folder]) > 3 else ''}")
         
         # 检查是否所有文件夹都有文件
-        if not all(part_files.values()):
-            self.print_warning("部分文件夹为空，请添加对应文件后重新运行")
-            empty_folders = [folder for folder, files in part_files.items() if not files]
+        empty_folders = [folder for folder, files in part_files.items() if not files]
+        if empty_folders:
             print(f"空的文件夹: {empty_folders}")
             
-            # 提示用户如何添加文件
-            print(f"\n💡 请在以下文件夹中添加对应文件:")
+            # 检查是否有重要的文件夹为空
+            critical_empty_folders = []
             for folder in empty_folders:
-                folder_path = os.path.join(self.materials_folder_path, folder)
-                if folder == 'background':
-                    print(f"  - {folder_path} (添加 .jpg/.png 图片文件)")
+                # background或partbg文件夹为空时，检查草稿中是否实际有相关素材
+                if folder == 'background' or folder.startswith('partbg'):
+                    has_related_materials = False
+                    if hasattr(self, 'selected_draft') and self.selected_draft:
+                        draft_info = self.load_draft_info_from_file(self.selected_draft)
+                        if draft_info and 'raw_data' in draft_info and 'materials' in draft_info['raw_data']:
+                            materials = draft_info['raw_data']['materials']
+                            # 检查是否有相关的图片素材
+                            for material_type in ['images', 'stickers']:
+                                if material_type in materials:
+                                    for image in materials[material_type]:
+                                        if isinstance(image, dict):
+                                            image_name = image.get('material_name', image.get('name', ''))
+                                            
+                                            # 过滤掉复合片段和以_开头的素材
+                                            if "复合片段" in image_name or image_name.startswith("_"):
+                                                continue
+                                            
+                                            # 检查是否匹配当前文件夹
+                                            if folder == 'background' and 'background' in image_name.lower():
+                                                has_related_materials = True
+                                                break
+                                            elif folder.startswith('partbg'):
+                                                import re
+                                                match = re.match(r'(partbg\d+)\.\w+', image_name.lower())
+                                                if match and match.group(1) == folder:
+                                                    has_related_materials = True
+                                                    break
+                                if has_related_materials:
+                                    break
+                    
+                    if has_related_materials:
+                        critical_empty_folders.append(folder)
+                    else:
+                        print(f"  💡 {folder} 文件夹为空，但草稿中无相关素材，将自动跳过")
                 else:
-                    print(f"  - {folder_path} (添加 .mp4 视频文件)")
+                    # part文件夹为空是需要关注的
+                    critical_empty_folders.append(folder)
             
-            return False
+            # 只有关键文件夹为空时才报错
+            if critical_empty_folders:
+                self.print_warning("以下关键文件夹为空，请添加对应文件后重新运行")
+                print(f"需要文件的文件夹: {critical_empty_folders}")
+                
+                # 提示用户如何添加文件
+                print(f"\n💡 请在以下文件夹中添加对应文件:")
+                for folder in critical_empty_folders:
+                    folder_path = os.path.join(self.materials_folder_path, folder)
+                    if folder == 'background' or folder.startswith('partbg'):
+                        print(f"  - {folder_path} (添加 .jpg/.png 图片文件)")
+                    else:
+                        print(f"  - {folder_path} (添加 .mp4 视频文件)")
+                
+                return False
+            else:
+                print(f"✅ 所有必要的文件夹都有对应文件，空文件夹已自动跳过")
+        
+        # 从part_files中移除空的非必要文件夹，但保留有对应草稿素材的文件夹
+        filtered_part_files = {}
+        for folder, files in part_files.items():
+            if files:
+                # 有文件的文件夹直接保留
+                filtered_part_files[folder] = files
+            else:
+                # 空文件夹需要检查是否在草稿中有对应素材
+                keep_folder = False
+                
+                if hasattr(self, 'selected_draft') and self.selected_draft:
+                    draft_info = self.load_draft_info_from_file(self.selected_draft)
+                    if draft_info and 'video_materials' in draft_info:
+                        for material in draft_info['video_materials']:
+                            material_name = material.get('name', '')
+                            
+                            # 过滤掉复合片段和以_开头的素材
+                            if "复合片段" in material_name or material_name.startswith("_"):
+                                continue
+                            
+                            # 检查是否有对应这个文件夹的素材
+                            import re
+                            if folder.startswith('partbg'):
+                                # 对于 partbgN 文件夹，检查是否有 partbgN.jpg 素材
+                                match = re.match(r'(partbg\d+)\.\w+', material_name.lower())
+                                if match and match.group(1) == folder:
+                                    keep_folder = True
+                                    break
+                            elif folder.startswith('part') and not folder.startswith('partbg'):
+                                # 对于 partN 文件夹，检查是否有 partN.mp4 素材
+                                match = re.match(r'part(\d+)\.(mp4|mov|avi|mkv)', material_name.lower())
+                                if match and f'part{match.group(1)}' == folder:
+                                    keep_folder = True
+                                    break
+                            elif folder == 'background' and 'background' in material_name.lower():
+                                keep_folder = True
+                                break
+                
+                if keep_folder:
+                    # 保留空文件夹，但给一个空列表占位
+                    filtered_part_files[folder] = []
+                    print(f"  💡 保留空文件夹 {folder}（草稿中有对应素材需要替换）")
+        
+        part_files = filtered_part_files
         
         # 生成素材组合
         return self.generate_material_combinations(part_files)
@@ -1373,9 +1538,15 @@ class BatchDraftProcessor:
         """生成素材组合"""
         self.print_section("生成素材组合")
         
-        # 找到文件数量最少的文件夹（决定组合数量），排除音频和背景音乐文件夹
+        # 找到文件数量最少的文件夹（决定组合数量），排除音频和背景音乐文件夹，也排除空文件夹
         non_audio_files = {k: v for k, v in part_files.items() if k not in ['audios', 'bg_musics']}
-        min_count = min(len(files) for files in non_audio_files.values()) if non_audio_files else 0
+        # 只考虑有文件的文件夹来决定组合数量，空文件夹代表不需要新素材只需要替换
+        non_empty_files = {k: v for k, v in non_audio_files.items() if len(v) > 0}
+        min_count = min(len(files) for files in non_empty_files.values()) if non_empty_files else 1
+        
+        print(f"📊 文件夹状态:")
+        print(f"  📁 有文件的文件夹: {len(non_empty_files)} 个")
+        print(f"  📂 空文件夹（仅替换）: {len(non_audio_files) - len(non_empty_files)} 个")
         
         print(f"📊 各文件夹文件数量:")
         for folder, files in part_files.items():
@@ -1414,7 +1585,7 @@ class BatchDraftProcessor:
             return False
         
         # 如果启用了音频功能，扫描音频文件并添加到part_files
-        if self.enable_audio:
+        if self.enable_audio_subtitle:
             audio_files = self.scan_audio_files()
             if audio_files:
                 part_files['audios'] = audio_files
@@ -1461,8 +1632,12 @@ class BatchDraftProcessor:
                         audio_files = sorted_parts[folder]
                         if audio_files:
                             combination[folder] = audio_files[i % len(audio_files)]
-                    else:
+                    elif folder in sorted_parts and len(sorted_parts[folder]) > 0:
+                        # 非空文件夹正常处理
                         combination[folder] = sorted_parts[folder][i]
+                    elif folder in sorted_parts:
+                        # 空文件夹标记为删除
+                        combination[folder] = "__REMOVE__"
                 self.material_combinations.append(combination)
         
         else:
@@ -1485,8 +1660,12 @@ class BatchDraftProcessor:
                         audio_files = shuffled_parts[folder]
                         if audio_files:
                             combination[folder] = audio_files[i % len(audio_files)]
-                    else:
+                    elif folder in shuffled_parts and len(shuffled_parts[folder]) > 0:
+                        # 非空文件夹正常处理
                         combination[folder] = shuffled_parts[folder][i]
+                    elif folder in shuffled_parts:
+                        # 空文件夹标记为删除
+                        combination[folder] = "__REMOVE__"
                 self.material_combinations.append(combination)
         
         # 显示生成的组合
@@ -1495,6 +1674,20 @@ class BatchDraftProcessor:
             combo_name = self.generate_chinese_combo_name(combo)
             combo_display = self.format_combination_display(combo)
             print(f"  组合 {i}: {combo_display} → {combo_name}")
+        
+        # 检查并提示空文件夹的处理方式
+        empty_folders_in_combo = []
+        if self.material_combinations:
+            sample_combo = self.material_combinations[0]
+            for folder, value in sample_combo.items():
+                if value == "__REMOVE__":
+                    empty_folders_in_combo.append(folder)
+        
+        if empty_folders_in_combo:
+            print(f"\n💡 空文件夹处理说明:")
+            print(f"   以下文件夹为空，对应素材将保持原样不变:")
+            for folder in empty_folders_in_combo:
+                print(f"   - {folder}/ (空) → 草稿中对应素材保持不变")
         
         return True
     
@@ -1511,11 +1704,17 @@ class BatchDraftProcessor:
         # 添加视频文件
         for folder in sorted_folders:
             if folder in combination:
-                parts.append(combination[folder])
+                if combination[folder] == "__REMOVE__":
+                    parts.append(f"[跳过{folder}]")
+                else:
+                    parts.append(combination[folder])
         
         # 添加background文件夹（如果存在）
         if 'background' in combination:
-            parts.append(combination['background'])
+            if combination['background'] == "__REMOVE__":
+                parts.append("[跳过background]")
+            else:
+                parts.append(combination['background'])
         
         # 处理音频文件信息
         if 'audios' in combination:
@@ -1794,8 +1993,10 @@ class BatchDraftProcessor:
             
             if not replacements:
                 print(f"    ❌ 没有找到可替换的素材")
-                # 如果没有常规素材替换，但有音频和字幕需要添加，仍然继续处理
-                if not (self.enable_audio_subtitle and 'audios' in combination):
+                # 如果没有常规素材替换，但有音频、字幕或背景音乐需要添加，仍然继续处理
+                has_audio_work = (self.enable_audio_subtitle and 'audios' in combination)
+                has_bg_music_work = (self.enable_background_music and 'bg_musics' in combination)
+                if not (has_audio_work or has_bg_music_work):
                     return False
             
             # 先处理常规素材替换（视频、图片）
@@ -1807,6 +2008,11 @@ class BatchDraftProcessor:
             if self.enable_audio_subtitle and 'audios' in combination:
                 audio_success = self.add_audio_and_subtitle_with_api(draft_name, combination)
                 success = success and audio_success
+            
+            # 处理单独的背景音乐（当没有音频时）
+            elif self.enable_background_music and 'bg_musics' in combination:
+                bg_music_success = self.add_background_music_only_with_api(draft_name, combination)
+                success = success and bg_music_success
             
             return success
             
@@ -1821,18 +2027,40 @@ class BatchDraftProcessor:
         for video in video_materials:
             video_name = video['name']
             
+            # 过滤逻辑：排除复合片段和以_开头的素材
+            if "复合片段" in video_name or video_name.startswith("_"):
+                if self.debug:
+                    print(f"    🚫 DEBUG 过滤素材: {video_name} (复合片段或以_开头)")
+                continue
+            
+            # 过滤逻辑：排除图片文件（应该在图片素材替换中处理）
+            if video_name.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif')):
+                if self.debug:
+                    print(f"    🚫 DEBUG 跳过图片文件: {video_name} (将在图片素材替换中处理)")
+                continue
+            
             # 基于素材名称匹配对应的part文件夹
             matching_folder = None
             
-            # 动态检查素材名称是否包含partN关键词
+            # 动态检查素材名称是否包含part相关关键词（仅视频格式）
             import re
-            match = re.search(r'part(\d+)', video_name.lower())
+            # 只匹配 partN.mp4 等视频格式，不匹配 partbgN.jpg 图片格式
+            match = re.match(r'part(\d+)\.(mp4|mov|avi|mkv|m4v)', video_name.lower())
             if match:
                 part_num = match.group(1)
                 matching_folder = f'part{part_num}'
                 
                 if self.debug:
-                    print(f"    🔍 DEBUG 匹配素材: {video_name} → {matching_folder}")
+                    print(f"    🔍 DEBUG 匹配视频素材: {video_name} → {matching_folder}")
+            else:
+                # 兼容旧的匹配方式（只匹配part，不匹配partbg）
+                match = re.search(r'part(\d+)', video_name.lower())
+                if match and not video_name.lower().startswith('partbg'):
+                    part_num = match.group(1)
+                    matching_folder = f'part{part_num}'
+                    
+                    if self.debug:
+                        print(f"    🔍 DEBUG 兼容匹配视频素材: {video_name} → {matching_folder}")
             
             if matching_folder and matching_folder in combination:
                 new_file_name = combination[matching_folder]
@@ -1859,12 +2087,59 @@ class BatchDraftProcessor:
         """准备图片素材替换"""
         replacements = []
         
-        # 检查是否有background组合
-        if 'background' not in combination:
-            return replacements
+        # 从 video_materials 中查找图片文件（在视频轨道上的图片）
+        if 'video_materials' in draft_info:
+            for material in draft_info['video_materials']:
+                if isinstance(material, dict):
+                    image_name = material.get('name', '')
+                    
+                    # 过滤掉复合片段和以_开头的素材
+                    if "复合片段" in image_name or image_name.startswith("_"):
+                        continue
+                    
+                    # 只处理图片文件
+                    if not image_name.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif')):
+                        continue
+                    
+                    matching_folder = None
+                    
+                    # 匹配 partbgN.jpg 等格式
+                    import re
+                    match = re.match(r'(partbg\d+)\.\w+', image_name.lower())
+                    if match:
+                        matching_folder = match.group(1)
+                    elif 'background' in image_name.lower():
+                        # 兼容原有的 background 匹配
+                        matching_folder = 'background'
+                    
+                    if matching_folder and matching_folder in combination:
+                        replacement_value = combination[matching_folder]
+                        
+                        if replacement_value == "__REMOVE__":
+                            # 空文件夹，用户没有提供替换文件，保持原图片不变
+                            print(f"    ⏭️ 跳过 {image_name} (对应文件夹 {matching_folder} 为空，保持原图)")
+                        else:
+                            new_file_name = replacement_value
+                            new_file_path = os.path.join(self.materials_folder_path, matching_folder, new_file_name)
+                            
+                            if os.path.exists(new_file_path):
+                                replacements.append({
+                                    'original_name': image_name,
+                                    'original_id': material.get('id', ''),
+                                    'new_file': new_file_path,
+                                    'new_name': new_file_name,
+                                    'type': 'image',
+                                    'folder': matching_folder
+                                })
+                                print(f"    🔄 将用 {matching_folder}/{new_file_name} 替换 {image_name}")
+                            else:
+                                print(f"    ⚠️ 文件不存在: {new_file_path}")
+                    else:
+                        if self.debug:
+                            print(f"    🔍 DEBUG 无法匹配图片素材: {image_name}")
         
-        # 从draft_info中查找图片素材
-        if 'materials' in draft_info.get('raw_data', {}):
+        # 同时从 materials 中查找图片素材（如果存在）
+        if 'raw_data' in draft_info and 'materials' in draft_info['raw_data']:
             materials = draft_info['raw_data']['materials']
             
             # 查找图片素材
@@ -1874,23 +2149,55 @@ class BatchDraftProcessor:
                         if isinstance(image, dict):
                             image_name = image.get('material_name', image.get('name', ''))
                             
-                            # 检查是否是background相关的图片
-                            if 'background' in image_name.lower():
-                                new_file_name = combination['background']
-                                new_file_path = os.path.join(self.materials_folder_path, 'background', new_file_name)
+                            # 过滤掉复合片段和以_开头的素材
+                            if "复合片段" in image_name or image_name.startswith("_"):
+                                continue
+                            
+                            # 避免重复处理（已经在video_materials中处理过的）
+                            already_processed = False
+                            for existing in replacements:
+                                if existing['original_name'] == image_name:
+                                    already_processed = True
+                                    break
+                            if already_processed:
+                                continue
+                            
+                            matching_folder = None
+                            
+                            # 匹配 partbgN.jpg 等格式
+                            import re
+                            match = re.match(r'(partbg\d+)\.\w+', image_name.lower())
+                            if match:
+                                matching_folder = match.group(1)
+                            elif 'background' in image_name.lower():
+                                # 兼容原有的 background 匹配
+                                matching_folder = 'background'
+                            
+                            if matching_folder and matching_folder in combination:
+                                replacement_value = combination[matching_folder]
                                 
-                                if os.path.exists(new_file_path):
-                                    replacements.append({
-                                        'original_name': image_name,
-                                        'original_id': image.get('id', ''),
-                                        'new_file': new_file_path,
-                                        'new_name': new_file_name,
-                                        'type': 'image',
-                                        'folder': 'background'
-                                    })
-                                    print(f"    🔄 将用 background/{new_file_name} 替换 {image_name}")
+                                if replacement_value == "__REMOVE__":
+                                    # 空文件夹，用户没有提供替换文件，保持原图片不变
+                                    print(f"    ⏭️ 跳过 {image_name} (对应文件夹 {matching_folder} 为空，保持原图)")
                                 else:
-                                    print(f"    ⚠️ 文件不存在: {new_file_path}")
+                                    new_file_name = replacement_value
+                                    new_file_path = os.path.join(self.materials_folder_path, matching_folder, new_file_name)
+                                    
+                                    if os.path.exists(new_file_path):
+                                        replacements.append({
+                                            'original_name': image_name,
+                                            'original_id': image.get('id', ''),
+                                            'new_file': new_file_path,
+                                            'new_name': new_file_name,
+                                            'type': 'image',
+                                            'folder': matching_folder
+                                        })
+                                        print(f"    🔄 将用 {matching_folder}/{new_file_name} 替换 {image_name}")
+                                    else:
+                                        print(f"    ⚠️ 文件不存在: {new_file_path}")
+                            else:
+                                if self.debug:
+                                    print(f"    🔍 DEBUG 无法匹配图片素材: {image_name}")
         
         return replacements
     
@@ -4314,6 +4621,41 @@ class BatchDraftProcessor:
             
         except Exception as e:
             print(f"    ❌ 添加背景音乐失败: {e}")
+            return False
+    
+    def add_background_music_only_with_api(self, draft_name, combination):
+        """单独使用库API添加背景音乐（无音频时）"""
+        try:
+            print(f"    🎶 使用库API单独添加背景音乐...")
+            
+            # 加载草稿为ScriptFile对象
+            try:
+                script = self.load_draft_as_script_file(draft_name)
+                print(f"    ✅ 成功加载草稿为ScriptFile对象")
+            except Exception as e:
+                print(f"    ❌ 无法加载草稿为ScriptFile对象: {e}")
+                return False
+            
+            # 添加背景音乐
+            bg_music_success = self.add_background_music_with_api(script, combination)
+            if not bg_music_success:
+                print(f"    ❌ 背景音乐添加失败")
+                return False
+            
+            # 保存草稿
+            try:
+                script.save()
+                print(f"    ✅ 草稿保存成功")
+                return True
+                
+            except Exception as e:
+                print(f"    ❌ 保存草稿失败: {e}")
+                import traceback
+                print(f"    🔧 [DEBUG] 保存异常详情: {traceback.format_exc()}")
+                return False
+                
+        except Exception as e:
+            print(f"    ❌ 单独添加背景音乐失败: {e}")
             return False
     
     def calculate_background_music_adjustments(self, video_duration, bg_music_duration):
