@@ -789,6 +789,286 @@ class BatchDraftProcessor:
                 print("✅ 启用封面图生成（剪映样式兼容）")
         
         return True
+
+    def configure_background_music_options(self):
+        """配置背景音乐选项"""
+        self.print_section("背景音乐配置")
+        
+        # 询问是否启用背景音乐
+        bg_music_options = ["是", "否"]
+        bg_music_idx, bg_music_str = self.get_user_choice(bg_music_options, "是否添加背景音乐", default_index=1)
+        
+        if bg_music_idx == 1:  # 选择"否"
+            self.enable_background_music = False
+            print("✅ 跳过背景音乐功能")
+            return True
+        
+        self.enable_background_music = True
+        print("✅ 启用背景音乐功能")
+        
+        # 设置背景音乐文件夹路径
+        if not self.setup_background_music_folder():
+            return False
+        
+        # 配置背景音乐音量
+        print(f"\n🔊 背景音乐音量配置 (当前: {self.bg_music_volume}%)")
+        bg_volume_input = self.get_user_input("请输入背景音乐音量大小 (0-1000, 默认100, 最大1000=20.0dB)", allow_empty=True)
+        if bg_volume_input:
+            try:
+                bg_volume = int(bg_volume_input)
+                if 0 <= bg_volume <= 1000:
+                    self.bg_music_volume = bg_volume
+                    bg_db_value = 20 * (bg_volume / 100 - 1) if bg_volume != 100 else 0
+                    print(f"✅ 背景音乐音量设置为: {bg_volume}% (≈{bg_db_value:.1f}dB)")
+                else:
+                    print("⚠️ 背景音乐音量超出范围，使用默认值100%")
+            except ValueError:
+                print("⚠️ 背景音乐音量输入无效，使用默认值100%")
+        
+        # 配置背景音乐淡入淡出时长
+        print(f"\n🎵 背景音乐淡入淡出配置 (当前: 淡入{self.bg_music_fade_in}s, 淡出{self.bg_music_fade_out}s)")
+        bg_fade_in_input = self.get_user_input("请输入背景音乐淡入时长(秒, 默认0)", allow_empty=True)
+        if bg_fade_in_input:
+            try:
+                self.bg_music_fade_in = float(bg_fade_in_input)
+                print(f"✅ 背景音乐淡入时长设置为: {self.bg_music_fade_in}s")
+            except ValueError:
+                print("⚠️ 背景音乐淡入时长输入无效，使用默认值0s")
+        
+        bg_fade_out_input = self.get_user_input("请输入背景音乐淡出时长(秒, 默认0)", allow_empty=True)
+        if bg_fade_out_input:
+            try:
+                self.bg_music_fade_out = float(bg_fade_out_input)
+                print(f"✅ 背景音乐淡出时长设置为: {self.bg_music_fade_out}s")
+            except ValueError:
+                print("⚠️ 背景音乐淡出时长输入无效，使用默认值0s")
+        
+        # 配置背景音乐选择规则
+        print(f"\n📋 背景音乐选择规则")
+        bg_selection_options = ["按文件名顺序", "随机选择"]
+        bg_selection_idx, bg_selection_str = self.get_user_choice(bg_selection_options, "背景音乐文件选择规则", default_index=0)
+        self.bg_music_selection_mode = "sequential" if bg_selection_idx == 0 else "random"
+        print(f"✅ 背景音乐选择规则: {bg_selection_str}")
+        
+        # 配置背景音乐比视频长的处理方式
+        print(f"\n⏱️ 背景音乐比视频长的处理方式")
+        bg_longer_options = [
+            "无 (保持背景音乐原样)",
+            "加速背景音乐以缩短时长，使得背景音乐和视频画面一样长",
+            "裁剪掉背景音乐后面的部分，使得背景音乐和视频画面一样长"
+        ]
+        bg_longer_idx, bg_longer_str = self.get_user_choice(bg_longer_options, "背景音乐比视频长时的处理", default_index=0)
+        if bg_longer_idx == 0:
+            self.bg_music_longer_handling = "none"
+        elif bg_longer_idx == 1:
+            self.bg_music_longer_handling = "speed_up"
+        else:
+            self.bg_music_longer_handling = "trim"
+        print(f"✅ 背景音乐较长处理: {bg_longer_str}")
+        
+        # 配置背景音乐比视频短的处理方式
+        print(f"\n⏱️ 背景音乐比视频短的处理方式")
+        bg_shorter_options = [
+            "无",
+            "背景音乐保持默认速度，裁剪掉长于背景音乐的后面的视频画面",
+            "背景音乐保证默认速度，视频后面部分没有背景音乐声音",
+            "减速背景音乐以延展时长，使得背景音乐和视频画面一样长"
+        ]
+        bg_shorter_idx, bg_shorter_str = self.get_user_choice(bg_shorter_options, "背景音乐比视频短时的处理", default_index=0)
+        if bg_shorter_idx == 0:
+            self.bg_music_shorter_handling = "none"
+        elif bg_shorter_idx == 1:
+            self.bg_music_shorter_handling = "trim_video"
+        elif bg_shorter_idx == 2:
+            self.bg_music_shorter_handling = "allow_silence"
+        else:
+            self.bg_music_shorter_handling = "slow_down"
+        print(f"✅ 背景音乐较短处理: {bg_shorter_str}")
+        
+        return True
+
+    def configure_audio_options(self):
+        """配置音频选项"""
+        self.print_section("音频配置")
+        
+        # 询问是否启用音频
+        enable_options = ["是", "否"]
+        enable_idx, enable_str = self.get_user_choice(enable_options, "是否添加音频", default_index=1)
+        
+        if enable_idx == 1:  # 选择"否"
+            self.enable_audio = False
+            self.enable_subtitles = False
+            print("✅ 跳过音频功能")
+            return True
+        
+        self.enable_audio = True
+        print("✅ 启用音频功能")
+        
+        # 设置音频文件夹路径
+        if not self.setup_audios_folder():
+            return False
+        
+        # 配置音量
+        print(f"\n🔊 音量大小配置 (当前: {self.audio_volume}%)")
+        volume_input = self.get_user_input("请输入音量大小 (0-1000, 默认100, 最大1000=20.0dB)", allow_empty=True)
+        if volume_input:
+            try:
+                volume = int(volume_input)
+                if 0 <= volume <= 1000:
+                    self.audio_volume = volume
+                    db_value = 20 * (volume / 100 - 1) if volume != 100 else 0
+                    print(f"✅ 音量设置为: {volume}% (≈{db_value:.1f}dB)")
+                else:
+                    print("⚠️ 音量超出范围，使用默认值100%")
+            except ValueError:
+                print("⚠️ 音量输入无效，使用默认值100%")
+        
+        # 配置淡入淡出时长
+        print(f"\n🎵 淡入淡出配置 (当前: 淡入{self.audio_fade_in}s, 淡出{self.audio_fade_out}s)")
+        fade_in_input = self.get_user_input("请输入淡入时长(秒, 默认0)", allow_empty=True)
+        if fade_in_input:
+            try:
+                self.audio_fade_in = float(fade_in_input)
+                print(f"✅ 淡入时长设置为: {self.audio_fade_in}s")
+            except ValueError:
+                print("⚠️ 淡入时长输入无效，使用默认值0s")
+        
+        fade_out_input = self.get_user_input("请输入淡出时长(秒, 默认0)", allow_empty=True)
+        if fade_out_input:
+            try:
+                self.audio_fade_out = float(fade_out_input)
+                print(f"✅ 淡出时长设置为: {self.audio_fade_out}s")
+            except ValueError:
+                print("⚠️ 淡出时长输入无效，使用默认值0s")
+        
+        # 配置音频选择规则
+        print(f"\n📋 音频选择规则")
+        selection_options = ["按文件名顺序", "随机选择"]
+        selection_idx, selection_str = self.get_user_choice(selection_options, "音频文件选择规则", default_index=0)
+        self.audio_selection_mode = "sequential" if selection_idx == 0 else "random"
+        print(f"✅ 音频选择规则: {selection_str}")
+        
+        # 配置音频比视频长的处理方式
+        print(f"\n⏱️ 音频比视频长的处理方式")
+        longer_options = [
+            "无 (保持音频原样)",
+            "加速音频以缩短时长，使得音频和视频画面一样长",
+            "裁剪掉音频后面的部分，使得音频和视频画面一样长"
+        ]
+        longer_idx, longer_str = self.get_user_choice(longer_options, "音频比视频长时的处理", default_index=0)
+        if longer_idx == 0:
+            self.audio_longer_handling = "none"
+        elif longer_idx == 1:
+            self.audio_longer_handling = "speed_up"
+        else:
+            self.audio_longer_handling = "trim"
+        print(f"✅ 音频较长处理: {longer_str}")
+        
+        # 配置音频比视频短的处理方式
+        print(f"\n⏱️ 音频比视频短的处理方式")
+        shorter_options = [
+            "无 (保持音频原样)",
+            "音频保持默认速度，裁剪掉长于音频的后面的视频画面（比如音频是1分钟，视频画面是2分钟，这项配置会把视频裁剪为1分钟，后半部分视频就看不到了）",
+            "音频保证默认速度，视频后面部分没有音频声音",
+            "减速音频以延展时长，使得音频和视频画面一样长"
+        ]
+        shorter_idx, shorter_str = self.get_user_choice(shorter_options, "音频比视频短时的处理", default_index=0)
+        if shorter_idx == 0:
+            self.audio_shorter_handling = "none"
+        elif shorter_idx == 1:
+            self.audio_shorter_handling = "trim_video"
+        elif shorter_idx == 2:
+            self.audio_shorter_handling = "allow_silence"
+        else:
+            self.audio_shorter_handling = "slow_down"
+        print(f"✅ 音频较短处理: {shorter_str}")
+        
+        # 配置字幕选项
+        print(f"\n📝 字幕配置")
+        subtitle_options = ["是", "否"]
+        subtitle_idx, subtitle_str = self.get_user_choice(subtitle_options, "是否加载音频对应的SRT字幕文件", default_index=0)
+        self.enable_subtitles = (subtitle_idx == 0)
+        print(f"✅ 字幕功能: {'启用' if self.enable_subtitles else '禁用'}")
+        
+        if self.enable_subtitles:
+            print("💡 提示: 请确保SRT字幕文件与音频文件同名且在同一目录")
+            print("   例如: abc.mp3 对应的字幕文件为 abc.srt")
+            
+            # 配置字幕样式
+            print(f"\n🎨 字幕样式配置")
+            style_options = [
+                "白底黑框 (12字号，白底，黑色边框，自动换行)",
+                "默认样式 (系统默认字幕样式)"
+            ]
+            style_idx, style_str = self.get_user_choice(style_options, "选择字幕样式", default_index=0)
+            
+            if style_idx == 0:
+                self.subtitle_style = "white_bg_black_border"
+                print(f"    🔧 [DEBUG] 设置字幕样式: white_bg_black_border")
+            else:
+                self.subtitle_style = "default"
+                print(f"    🔧 [DEBUG] 设置字幕样式: default")
+            
+            print(f"    🔧 [DEBUG] 最终self.subtitle_style值: '{self.subtitle_style}'")
+            print(f"✅ 字幕样式: {style_str}")
+        
+        return True
+
+    def configure_text_replacement_options(self):
+        """配置文本替换选项"""
+        self.print_section("文本替换配置")
+        
+        # 询问是否启用文本替换
+        text_options = ["是", "否"]
+        text_idx, text_str = self.get_user_choice(text_options, "是否需要文本替换", default_index=1)
+        
+        if text_idx == 1:  # 选择"否"
+            self.enable_text_replacement = False
+            print("✅ 跳过文本替换功能")
+            return True
+        
+        self.enable_text_replacement = True
+        print("✅ 启用文本替换功能")
+        
+        # 选择替换文本数量
+        count_options = ["1段（标题）", "2段（标题+水印）"]
+        count_idx, count_str = self.get_user_choice(count_options, "选择替换的文本数量", default_index=0)
+        
+        self.text_replacement_count = count_idx + 1
+        print(f"✅ 文本替换数量: {self.text_replacement_count}段")
+        
+        # 先从源草稿中提取文本轨道，让用户选择要替换的轨道
+        if not self.configure_text_tracks_selection():
+            print("⚠️ 文本轨道选择失败，将跳过文本替换功能")
+            self.enable_text_replacement = False
+            return True
+        
+        # 设置文本文件夹路径
+        if not self.setup_text_folder():
+            print("⚠️ 文本文件夹设置失败，将跳过文本替换功能")
+            self.enable_text_replacement = False
+            return True
+        
+        # 设置文本文件路径（不展示内容）
+        if not self.setup_text_files_simple():
+            print("⚠️ 文本文件设置失败，将跳过文本替换功能")
+            self.enable_text_replacement = False
+            return True
+        
+        # 读取和解析文本内容
+        if not self.load_text_contents():
+            print("⚠️ 文本内容读取失败，将跳过文本替换功能")
+            self.enable_text_replacement = False
+            return True
+        
+        # 选择文本替换规则
+        selection_options = ["按顺序然后循环", "随机"]
+        selection_idx, selection_str = self.get_user_choice(selection_options, "文本选择规则", default_index=0)
+        
+        self.text_selection_mode = "sequential" if selection_idx == 0 else "random"
+        print(f"✅ 文本选择规则: {selection_str}")
+        
+        return True
     
     def setup_audios_folder(self):
         """设置音频文件夹"""
@@ -1121,12 +1401,20 @@ class BatchDraftProcessor:
         
         print(f"✅ 选择模式: {mode_str}")
         
-        # 配置音频和字幕选项
-        if not self.configure_audio_subtitle_options():
+        # 配置背景音乐选项
+        if not self.configure_background_music_options():
             return False
         
-        # 如果启用了音频和字幕功能，扫描音频文件并添加到part_files
-        if self.enable_audio_subtitle:
+        # 配置音频选项
+        if not self.configure_audio_options():
+            return False
+        
+        # 配置文本替换选项
+        if not self.configure_text_replacement_options():
+            return False
+        
+        # 如果启用了音频功能，扫描音频文件并添加到part_files
+        if self.enable_audio:
             audio_files = self.scan_audio_files()
             if audio_files:
                 part_files['audios'] = audio_files
@@ -5326,6 +5614,13 @@ class BatchDraftProcessor:
                         
                         # 同时更新base_content
                         text_material['base_content'] = new_text
+                        
+                        # 启用自动换行功能，最大行宽为屏幕宽度的80%
+                        text_material['type'] = 'subtitle'  # 启用自动换行
+                        text_material['line_max_width'] = 0.8  # 最大行宽占屏幕80%
+                        text_material['force_apply_line_max_width'] = False
+                        text_material['line_feed'] = 1
+                        
                         break
             
             return True

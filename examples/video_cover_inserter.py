@@ -1126,11 +1126,51 @@ class VideoCoverInserter:
             
         return True
         
+    def extract_cover_only(self, video_path, output_folder):
+        """只从视频中提取封面图"""
+        filename = os.path.basename(video_path)
+        name_without_ext = os.path.splitext(filename)[0]
+        
+        print(f"\n🎬 提取封面: {filename}")
+        
+        # 1. 获取视频信息
+        video_info = self.get_video_info(video_path)
+        if not video_info:
+            print(f"❌ 跳过: 无法获取视频信息")
+            return False
+            
+        print(f"   📊 视频信息: {video_info['width']}x{video_info['height']}, "
+              f"{video_info['duration']:.1f}s, {video_info['fps']:.1f}fps")
+        
+        # 2. 提取封面图
+        cover_image_path = os.path.join(output_folder, f"{name_without_ext}_cover.jpg")
+        
+        if self.cover_source_mode == "last":
+            print(f"   📸 提取最后一帧作为封面图...")
+        else:
+            print(f"   📸 提取第{self.cover_source_time}秒的帧作为封面图...")
+        
+        if not self.extract_frame_from_video(video_path, cover_image_path):
+            print(f"❌ 跳过: 封面图提取失败")
+            return False
+            
+        print(f"   ✅ 封面图已保存: {name_without_ext}_cover.jpg")
+        return True
+        
     def configure_settings(self):
         """配置处理设置"""
         self.print_header("处理设置")
         
-        # 1. 封面图来源设置
+        # 1. 处理模式选择
+        mode_options = ["只截取封面图", "截取封面图并添加到视频开头"]
+        mode_idx, mode_str = self.get_user_choice(
+            mode_options, "选择处理模式", default_index=0
+        )
+        
+        self.processing_mode = "extract_only" if mode_idx == 0 else "extract_and_insert"
+        print(f"✅ 处理模式: {mode_str}")
+        
+        # 2. 封面图来源设置
         source_options = ["视频最后一帧", "指定时间点"]
         source_idx, source_str = self.get_user_choice(
             source_options, "选择封面图来源", default_index=0
@@ -1154,35 +1194,41 @@ class VideoCoverInserter:
                 except ValueError:
                     print("❌ 请输入有效的数字")
         
-        # 2. 封面图显示时长
-        duration_options = ["前2帧", "1秒", "2秒", "3秒", "5秒", "自定义"]
-        duration_idx, duration_str = self.get_user_choice(
-            duration_options, "选择封面图显示时长", default_index=0
-        )
-        
-        if duration_idx == 0:  # 前2帧
-            self.cover_duration_mode = "frames"
-            self.cover_frames = 2
-            print(f"✅ 封面图显示时长: 前2帧 (将根据视频帧率自动计算)")
-        elif duration_idx == 5:  # 自定义
-            while True:
-                try:
-                    custom_duration = float(self.get_user_input("请输入显示时长(秒)", "2.0"))
-                    if 0.1 <= custom_duration <= 10.0:
-                        self.cover_duration = custom_duration
-                        self.cover_duration_mode = "seconds"
-                        break
-                    else:
-                        print("❌ 请输入0.1-10.0之间的数值")
-                except ValueError:
-                    print("❌ 请输入有效的数字")
-        else:
-            durations = [None, 1.0, 2.0, 3.0, 5.0]  # None对应"前2帧"
-            self.cover_duration = durations[duration_idx]
-            self.cover_duration_mode = "seconds"
+        # 3. 封面图显示时长（仅在插入模式下配置）
+        if self.processing_mode == "extract_and_insert":
+            duration_options = ["前2帧", "1秒", "2秒", "3秒", "5秒", "自定义"]
+            duration_idx, duration_str = self.get_user_choice(
+                duration_options, "选择封面图显示时长", default_index=0
+            )
             
-        if hasattr(self, 'cover_duration'):
-            print(f"✅ 封面图显示时长: {self.cover_duration}秒")
+            if duration_idx == 0:  # 前2帧
+                self.cover_duration_mode = "frames"
+                self.cover_frames = 2
+                print(f"✅ 封面图显示时长: 前2帧 (将根据视频帧率自动计算)")
+            elif duration_idx == 5:  # 自定义
+                while True:
+                    try:
+                        custom_duration = float(self.get_user_input("请输入显示时长(秒)", "2.0"))
+                        if 0.1 <= custom_duration <= 10.0:
+                            self.cover_duration = custom_duration
+                            self.cover_duration_mode = "seconds"
+                            break
+                        else:
+                            print("❌ 请输入0.1-10.0之间的数值")
+                    except ValueError:
+                        print("❌ 请输入有效的数字")
+            else:
+                durations = [None, 1.0, 2.0, 3.0, 5.0]  # None对应"前2帧"
+                self.cover_duration = durations[duration_idx]
+                self.cover_duration_mode = "seconds"
+                
+            if hasattr(self, 'cover_duration'):
+                print(f"✅ 封面图显示时长: {self.cover_duration}秒")
+        else:
+            # 只截取封面模式，设置默认值
+            self.cover_duration_mode = "frames"
+            self.cover_frames = 1
+            print(f"✅ 模式: 只截取封面图，不涉及时长设置")
         
     def process_videos(self, video_files, output_folder):
         """批量处理视频"""
@@ -1190,15 +1236,24 @@ class VideoCoverInserter:
         success_count = 0
         failed_files = []
         
-        self.print_header(f"开始处理 {total_count} 个视频文件")
+        mode_text = "只截取封面图" if self.processing_mode == "extract_only" else "截取封面图并插入视频"
+        self.print_header(f"开始处理 {total_count} 个视频文件 ({mode_text})")
         
         for i, video_path in enumerate(video_files, 1):
             print(f"\n📹 进度: {i}/{total_count}")
             
-            if self.process_single_video(video_path, output_folder):
-                success_count += 1
+            if self.processing_mode == "extract_only":
+                # 只截取封面图模式
+                if self.extract_cover_only(video_path, output_folder):
+                    success_count += 1
+                else:
+                    failed_files.append(os.path.basename(video_path))
             else:
-                failed_files.append(os.path.basename(video_path))
+                # 截取封面图并插入视频模式
+                if self.process_single_video(video_path, output_folder):
+                    success_count += 1
+                else:
+                    failed_files.append(os.path.basename(video_path))
                 
         # 处理结果统计
         self.print_header("处理完成")
@@ -1214,10 +1269,11 @@ class VideoCoverInserter:
         
     def run(self):
         """主运行流程"""
-        self.print_header("视频封面图插入工具 (UltraThink)")
-        print("🎯 功能: 截取视频指定时间点的帧作为封面图，插入到视频开头")
-        print("✨ 支持: 最后一帧（默认）或指定时间点的帧")
-        print("🎬 效果: 视频播放时先显示封面图，然后播放原始内容")
+        self.print_header("视频封面图处理工具 (UltraThink)")
+        print("🎯 功能: 从视频中截取指定时间点的帧作为封面图")
+        print("✨ 模式: 1) 只截取封面图  2) 截取封面图并插入到视频开头")
+        print("📸 支持: 最后一帧（默认）或指定时间点的帧")
+        print("🎬 插入效果: 视频播放时先显示封面图，然后播放原始内容")
         print("📋 提示: 如需完全无损处理，请使用 video_cover_inserter_lossless.py")
         
         # 1. 检查FFmpeg
@@ -1241,17 +1297,24 @@ class VideoCoverInserter:
         print(f"   输入文件夹: {video_folder}")
         print(f"   视频文件数: {len(video_files)}")
         
+        # 显示处理模式
+        if self.processing_mode == "extract_only":
+            print(f"   处理模式: 只截取封面图")
+        else:
+            print(f"   处理模式: 截取封面图并添加到视频开头")
+        
         # 显示封面来源
         if self.cover_source_mode == "last":
             print(f"   封面来源: 视频最后一帧")
         else:
             print(f"   封面来源: 第{self.cover_source_time}秒的帧")
             
-        # 显示封面时长
-        if hasattr(self, 'cover_duration_mode') and self.cover_duration_mode == "frames":
-            print(f"   封面时长: 前{self.cover_frames}帧 (根据视频帧率自动计算)")
-        else:
-            print(f"   封面时长: {self.cover_duration}秒")
+        # 显示封面时长（仅在插入模式下）
+        if self.processing_mode == "extract_and_insert":
+            if hasattr(self, 'cover_duration_mode') and self.cover_duration_mode == "frames":
+                print(f"   封面时长: 前{self.cover_frames}帧 (根据视频帧率自动计算)")
+            else:
+                print(f"   封面时长: {self.cover_duration}秒")
         
         confirm = self.get_user_input("\n是否开始处理? (y/N)", "N")
         if confirm.lower() not in ['y', 'yes', '是']:
@@ -1259,7 +1322,10 @@ class VideoCoverInserter:
             return
             
         # 6. 创建输出文件夹
-        output_folder = os.path.join(video_folder, "processed_with_cover")
+        if self.processing_mode == "extract_only":
+            output_folder = os.path.join(video_folder, "extracted_covers")
+        else:
+            output_folder = os.path.join(video_folder, "processed_with_cover")
         os.makedirs(output_folder, exist_ok=True)
         print(f"📁 输出文件夹: {output_folder}")
         
