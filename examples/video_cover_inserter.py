@@ -355,46 +355,146 @@ class VideoCoverInserter:
                 return False
                 
             duration = info['duration']
+            fps = info['fps']
             
             # 根据设置确定提取时间点
             if self.cover_source_mode == "last":
-                # 提取最后一帧，避免黑帧 (倒数1秒处)
-                seek_time = max(0, duration - 1.0)
-                time_desc = f"最后一帧 (第{duration-1:.1f}秒)"
+                # 提取最后一帧：计算视频的总帧数，然后定位到最后一个关键帧
+                total_frames = int(duration * fps)
+                
+                # 为了避免黑帧和编码器问题，选择倒数第2-5帧中的一个
+                # 这样可以确保捕获到实际内容而不是黑屏
+                if total_frames <= 1:
+                    # 极短视频，直接取第0帧
+                    seek_time = 0
+                    frame_num = 0
+                elif total_frames <= 5:
+                    # 短视频，取中间帧避免边缘问题
+                    seek_time = duration * 0.5
+                    frame_num = total_frames // 2
+                else:
+                    # 正常视频，取倒数第3帧（平衡准确性和稳定性）
+                    frame_num = max(0, total_frames - 3)
+                    seek_time = frame_num / fps
+                
+                time_desc = f"最后一帧附近 (第{frame_num}帧/{total_frames}帧, {seek_time:.3f}秒)"
+                
             elif self.cover_source_mode == "time" and self.cover_source_time is not None:
                 # 提取指定时间点的帧
-                seek_time = min(max(0, self.cover_source_time), duration - 0.1)
-                time_desc = f"第{seek_time:.1f}秒"
+                seek_time = min(max(0, self.cover_source_time), duration - 0.01)  # 减0.01避免边界问题
+                frame_num = int(seek_time * fps)
+                time_desc = f"第{seek_time:.3f}秒 (第{frame_num}帧)"
             else:
                 # 默认回退到最后一帧
-                seek_time = max(0, duration - 1.0)
-                time_desc = f"最后一帧 (第{duration-1:.1f}秒)"
+                total_frames = int(duration * fps)
+                frame_num = max(0, total_frames - 3)
+                seek_time = frame_num / fps
+                time_desc = f"最后一帧附近 (第{frame_num}帧/{total_frames}帧, {seek_time:.3f}秒)"
             
             print(f"      📸 提取时间点: {time_desc}")
             
-            cmd = [
-                'ffmpeg',
-                '-i', video_path,
-                '-ss', str(seek_time),
-                '-vframes', '1',
-                '-q:v', '2',  # 高质量
-                '-y',  # 覆盖输出文件
-                output_path
-            ]
+            # 使用更精确的帧提取策略
+            success = False
+            error_messages = []
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                if os.path.exists(output_path):
-                    return True
+            # 方法1: 首选方案 - 使用输入前定位（更快更准）
+            if frame_num > 0:
+                cmd = [
+                    'ffmpeg',
+                    '-ss', str(seek_time),  # 先定位到时间点（输入前定位，更快更准）
+                    '-i', video_path,
+                    '-vframes', '1',
+                    '-q:v', '2',  # 高质量
+                    '-y',  # 覆盖输出文件
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    success = True
                 else:
-                    print(f"❌ 封面图未生成: {output_path}")
-                    return False
+                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                    error_messages.append(f"方法1失败: {error_msg}")
+            
+            # 方法2: 如果方法1失败，使用输入后定位（兼容性更好）
+            if not success:
+                cmd = [
+                    'ffmpeg',
+                    '-i', video_path,
+                    '-ss', str(seek_time),  # 输入后定位
+                    '-vframes', '1',
+                    '-q:v', '2',  # 高质量
+                    '-y',  # 覆盖输出文件
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    success = True
+                else:
+                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                    error_messages.append(f"方法2失败: {error_msg}")
+            
+            # 方法3: 如果都失败，使用select过滤器精确选择帧
+            if not success and frame_num >= 0:
+                cmd = [
+                    'ffmpeg',
+                    '-i', video_path,
+                    '-vf', f'select=eq(n\,{frame_num})',  # 精确选择指定帧
+                    '-vframes', '1',
+                    '-q:v', '2',  # 高质量
+                    '-y',  # 覆盖输出文件
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    success = True
+                else:
+                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                    error_messages.append(f"方法3失败: {error_msg}")
+            
+            # 方法4: 最后备选 - 稍微调整时间重新尝试
+            if not success and self.cover_source_mode == "last" and duration > 0.5:
+                # 尝试倒数第2秒或第1秒
+                alt_times = [max(0, duration - 2.0), max(0, duration - 0.5), 0]
+                
+                for alt_time in alt_times:
+                    cmd = [
+                        'ffmpeg',
+                        '-ss', str(alt_time),
+                        '-i', video_path,
+                        '-vframes', '1',
+                        '-q:v', '2',
+                        '-y',
+                        output_path
+                    ]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        print(f"      🔄 使用备选时间点 {alt_time:.1f}秒成功")
+                        success = True
+                        break
+                
+                if not success:
+                    error_messages.append("所有备选时间点都失败")
+            
+            if success:
+                file_size = os.path.getsize(output_path) / 1024  # KB
+                print(f"      ✅ 封面图提取成功: {file_size:.1f}KB")
+                return True
             else:
-                print(f"❌ FFmpeg错误: {result.stderr}")
+                print(f"❌ 封面图提取失败")
+                if error_messages:
+                    print(f"   错误信息:")
+                    for i, msg in enumerate(error_messages[-3:], 1):  # 只显示最后3个错误
+                        print(f"      {i}. {msg}")
                 return False
                 
         except Exception as e:
             print(f"❌ 提取封面帧失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
             
     def extract_cover_image_from_video(self, video_path, output_path):
