@@ -26,6 +26,7 @@ class VideoCoverInserter:
         self.cover_frames = 2  # 默认前2帧
         self.cover_source_mode = "last"  # 默认使用最后一帧
         self.cover_source_time = None  # 指定时间点（秒）
+        self.cover_suffix = "cover"  # 默认封面图文件名后缀
         
     def print_header(self, title):
         """打印标题"""
@@ -1166,7 +1167,11 @@ class VideoCoverInserter:
         
         # 3. 创建临时文件路径（保持原始格式）
         with tempfile.TemporaryDirectory() as temp_dir:
-            cover_image_path = os.path.join(temp_dir, f"{name_without_ext}_cover.jpg")
+            # 智能处理封面图文件名：空后缀时不添加下划线
+            if self.cover_suffix:
+                cover_image_path = os.path.join(temp_dir, f"{name_without_ext}_{self.cover_suffix}.jpg")
+            else:
+                cover_image_path = os.path.join(temp_dir, f"{name_without_ext}.jpg")
             cover_video_path = os.path.join(temp_dir, f"{name_without_ext}_cover_video{original_ext}")
             
             # 4. 提取指定时间点的帧作为封面图
@@ -1220,9 +1225,16 @@ class VideoCoverInserter:
                     print(f"   ❌ 文件明显压缩，强烈建议使用无损版本！")
             
             # 8. 保存独立的封面图
-            cover_jpg_path = os.path.join(output_folder, f"{name_without_ext}_cover.jpg")
+            # 智能处理封面图文件名：空后缀时不添加下划线
+            if self.cover_suffix:
+                cover_jpg_path = os.path.join(output_folder, f"{name_without_ext}_{self.cover_suffix}.jpg")
+                save_message = f"{name_without_ext}_{self.cover_suffix}.jpg"
+            else:
+                cover_jpg_path = os.path.join(output_folder, f"{name_without_ext}.jpg")
+                save_message = f"{name_without_ext}.jpg"
+            
             shutil.copy2(cover_image_path, cover_jpg_path)
-            print(f"   💾 封面图已保存: {name_without_ext}_cover.jpg")
+            print(f"   💾 封面图已保存: {save_message}")
             
         return True
         
@@ -1243,7 +1255,11 @@ class VideoCoverInserter:
               f"{video_info['duration']:.1f}s, {video_info['fps']:.1f}fps")
         
         # 2. 提取封面图
-        cover_image_path = os.path.join(output_folder, f"{name_without_ext}_cover.jpg")
+        # 智能处理封面图文件名：空后缀时不添加下划线
+        if self.cover_suffix:
+            cover_image_path = os.path.join(output_folder, f"{name_without_ext}_{self.cover_suffix}.jpg")
+        else:
+            cover_image_path = os.path.join(output_folder, f"{name_without_ext}.jpg")
         
         if self.cover_source_mode == "last":
             print(f"   📸 提取最后一帧作为封面图...")
@@ -1254,7 +1270,7 @@ class VideoCoverInserter:
             print(f"❌ 跳过: 封面图提取失败")
             return False
             
-        print(f"   ✅ 封面图已保存: {name_without_ext}_cover.jpg")
+        print(f"   ✅ 封面图已保存: {name_without_ext}_{self.cover_suffix}.jpg")
         return True
         
     def configure_settings(self):
@@ -1329,6 +1345,26 @@ class VideoCoverInserter:
             self.cover_duration_mode = "frames"
             self.cover_frames = 1
             print(f"✅ 模式: 只截取封面图，不涉及时长设置")
+        
+        # 4. 封面图文件名后缀设置
+        custom_suffix = input("请输入封面图文件名后缀(默认无后缀): ").strip()
+        # 允许空字符串作为有效后缀
+        
+        # 清除不合法字符（用于文件名）
+        invalid_chars = '<>:"|?*\\'
+        for char in invalid_chars:
+            custom_suffix = custom_suffix.replace(char, '_')
+        
+        # 清理后缀，但允许空字符串
+        custom_suffix = custom_suffix.strip('_')
+        
+        self.cover_suffix = custom_suffix
+        if self.cover_suffix:
+            print(f"✅ 封面图文件名后缀: '{self.cover_suffix}'")
+            print(f"   📁 生成的文件名示例: video_filename_{self.cover_suffix}.jpg")
+        else:
+            print(f"✅ 封面图文件名后缀: (无)")
+            print(f"   📁 生成的文件名示例: video_filename.jpg")
         
     def process_videos(self, video_files, output_folder):
         """批量处理视频"""
@@ -1408,6 +1444,11 @@ class VideoCoverInserter:
             print(f"   封面来源: 视频最后一帧")
         else:
             print(f"   封面来源: 第{self.cover_source_time}秒的帧")
+        # 显示封面文件名格式
+        if self.cover_suffix:
+            print(f"   封面后缀: '{self.cover_suffix}' → 生成的文件名: video_filename_{self.cover_suffix}.jpg")
+        else:
+            print(f"   封面后缀: (无) → 生成的文件名: video_filename.jpg")
             
         # 显示封面时长（仅在插入模式下）
         if self.processing_mode == "extract_and_insert":
