@@ -2111,6 +2111,11 @@ class BatchDraftProcessor:
                     elif 'background' in image_name.lower():
                         # 兼容原有的 background 匹配
                         matching_folder = 'background'
+                    elif re.match(r'partbg\d+.*\.(jpg|jpeg|png|bmp)', image_name.lower()):
+                        # 匹配 partbgN 前缀的图片文件
+                        match = re.match(r'(partbg\d+).*\.(jpg|jpeg|png|bmp)', image_name.lower())
+                        if match:
+                            matching_folder = match.group(1)
                     
                     if matching_folder and matching_folder in combination:
                         replacement_value = combination[matching_folder]
@@ -2172,6 +2177,11 @@ class BatchDraftProcessor:
                             elif 'background' in image_name.lower():
                                 # 兼容原有的 background 匹配
                                 matching_folder = 'background'
+                            elif re.match(r'partbg\d+.*\.(jpg|jpeg|png|bmp)', image_name.lower()):
+                                # 匹配 partbgN 前缀的图片文件
+                                match = re.match(r'(partbg\d+).*\.(jpg|jpeg|png|bmp)', image_name.lower())
+                                if match:
+                                    matching_folder = match.group(1)
                             
                             if matching_folder and matching_folder in combination:
                                 replacement_value = combination[matching_folder]
@@ -2468,7 +2478,10 @@ class BatchDraftProcessor:
             if not os.path.exists(materials_dir):
                 os.makedirs(materials_dir, exist_ok=True)
             
-            # 查找并更新图片素材
+            # 查找并更新图片素材 - 检查多个可能的存储位置
+            found_material = False
+            
+            # 1. 检查 images/stickers 数组
             if 'materials' in draft_info:
                 for material_type in ['images', 'stickers']:
                     if material_type in draft_info['materials']:
@@ -2476,33 +2489,87 @@ class BatchDraftProcessor:
                         
                         for image in images:
                             if isinstance(image, dict) and image.get('material_name') == replacement['original_name']:
-                                # 复制新文件到草稿materials目录
-                                new_filename = replacement['new_name']
-                                target_path = os.path.join(materials_dir, new_filename)
-                                
-                                shutil.copy2(replacement['new_file'], target_path)
-                                
-                                # 获取新文件的信息
-                                new_file_info = self.get_image_file_info(replacement['new_file'])
-                                
-                                # 更新素材信息
-                                image['material_name'] = new_filename
-                                image['path'] = f"##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##/materials/image/{new_filename}"
-                                
-                                if new_file_info:
-                                    if 'width' in new_file_info:
-                                        image['width'] = new_file_info['width']
-                                    if 'height' in new_file_info:
-                                        image['height'] = new_file_info['height']
-                                
-                                print(f"    ✅ 更新图片素材: {replacement['original_name']} → {new_filename}")
+                                # 找到素材，执行替换
+                                found_material = True
+                                self._perform_image_replacement(image, replacement, materials_dir)
                                 return True
+            
+            # 2. 检查 videos 数组（图片可能被当作 photo 类型存储在这里）
+            if not found_material and 'materials' in draft_info and 'videos' in draft_info['materials']:
+                videos = draft_info['materials']['videos']
+                
+                for video in videos:
+                    if isinstance(video, dict) and video.get('material_name') == replacement['original_name']:
+                        # 检查是否为图片类型
+                        if video.get('type') == 'photo' or video.get('material_type') == 'photo':
+                            # 找到素材，执行替换
+                            found_material = True
+                            self._perform_image_replacement(video, replacement, materials_dir)
+                            return True
+            
+            # 3. 检查 video_materials 数组（兼容性检查）
+            if not found_material and 'video_materials' in draft_info:
+                for video_material in draft_info['video_materials']:
+                    if isinstance(video_material, dict) and video_material.get('name') == replacement['original_name']:
+                        # 检查是否为图片文件
+                        if video_material.get('name', '').lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                            # 需要在 materials 结构中查找对应的素材
+                            material_id = video_material.get('id')
+                            if 'materials' in draft_info and 'videos' in draft_info['materials']:
+                                for video in draft_info['materials']['videos']:
+                                    if isinstance(video, dict) and video.get('id') == material_id:
+                                        found_material = True
+                                        self._perform_image_replacement(video, replacement, materials_dir)
+                                        return True
+            
+            if not found_material:
+                print(f"    ⚠️ 未找到图片素材: {replacement['original_name']}")
+                if self.debug:
+                    print(f"    🔍 DEBUG: 已检查的存储位置:")
+                    print(f"      - materials/images")
+                    print(f"      - materials/stickers") 
+                    print(f"      - materials/videos (type=photo)")
+                    print(f"      - video_materials (映射查找)")
             
             return False
             
         except Exception as e:
             print(f"    ❌ 替换图片素材失败 {replacement['original_name']}: {e}")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
             return False
+    
+    def _perform_image_replacement(self, image_material, replacement, materials_dir):
+        """执行实际的图片替换操作"""
+        # 复制新文件到草稿materials目录
+        new_filename = replacement['new_name']
+        target_path = os.path.join(materials_dir, new_filename)
+        
+        shutil.copy2(replacement['new_file'], target_path)
+        
+        # 获取新文件的信息
+        new_file_info = self.get_image_file_info(replacement['new_file'])
+        
+        # 更新素材信息
+        image_material['material_name'] = new_filename
+        # 使用占位符路径，与视频素材保持一致
+        image_material['path'] = f"##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##/materials/image/{new_filename}"
+        
+        # 确保类型设置为 photo
+        if 'type' in image_material:
+            image_material['type'] = 'photo'
+        if 'material_type' in image_material:
+            image_material['material_type'] = 'photo'
+        
+        # 更新尺寸信息
+        if new_file_info:
+            if 'width' in new_file_info:
+                image_material['width'] = new_file_info['width']
+            if 'height' in new_file_info:
+                image_material['height'] = new_file_info['height']
+        
+        print(f"    ✅ 更新图片素材: {replacement['original_name']} → {new_filename}")
     
     def get_image_file_info(self, image_path):
         """获取图片文件信息"""

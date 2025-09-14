@@ -13,3 +13,4 @@ dist/
 venv/
 examples/materials
 examples/materials-bak/
+.spec-workflow/
